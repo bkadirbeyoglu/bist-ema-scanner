@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+env/
+venv/
+.env
+.venv
+
+# Poetry
+dist/
+poetry.lock
+
+# IDE
+.vscode/
+.idea/
+
+*.swp
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache
+
+# OS
+.DS_Store
+
+# Project specific
+logs/
+data/
+*.log
