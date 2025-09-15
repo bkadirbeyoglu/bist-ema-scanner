@@ -1,19 +1,37 @@
-[project]
+[tool.poetry]
 name = "trading-system"
 version = "0.1.0"
-description = ""
-authors = [
-    {name = "burak.kadirbeyoglu",email = "k.burak@wako3d.com"}
-]
+description = "Production-grade algorithmic trading system"
+authors = ["Burak Kadirbeyoglu <bkadirbeyoglu@gmail.com>"]
 readme = "README.md"
-requires-python = ">=3.11"
-dependencies = [
-]
-
-[tool.poetry]
 packages = [{include = "trading_system", from = "src"}]
 
+[tool.poetry.dependencies]
+python = "^3.11"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4"
+pytest-cov = "^4.1"
+pytest-mock = "^3.11"
+black = "^23.7"
+flake8 = "^6.1"
+mypy = "^1.5"
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
+requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra -q --strict-markers --cov=src/trading_system --cov-report=term-missing"
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
