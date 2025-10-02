@@ -1,15 +1,22 @@
+# Starting from Day 1's pyproject.toml, we add new dependencies incrementally
+
 [tool.poetry]
 name = "trading-system"
 version = "0.1.0"
 description = "Production-grade algorithmic trading system"
-authors = ["Burak Kadirbeyoglu <bkadirbeyoglu@gmail.com>"]
+authors = ["Burak Kadirbeyoglu <bkadirbeyoglu@gmail.com>"]  # Update with your name
 readme = "README.md"
 packages = [{include = "trading_system", from = "src"}]
 
 [tool.poetry.dependencies]
 python = "^3.11"
+# No production dependencies yet - we'll add them as needed
+aiohttp = "^3.12.15"
+python-dotenv = "^1.1.1"
+websockets = "^15.0.1"
 
 [tool.poetry.group.dev.dependencies]
+# Existing from Day 1
 pytest = "^7.4"
 pytest-cov = "^4.1"
 pytest-mock = "^3.11"
@@ -17,15 +24,37 @@ black = "^23.7"
 flake8 = "^6.1"
 mypy = "^1.5"
 
+# NEW for Day 2 Session 1
+pytest-asyncio = "^0.21.1"  # For testing async event bus
+hypothesis = "^6.90.0"      # For property-based testing
+ipdb = "^0.13.13"          # Interactive Python debugger
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
+# Update pytest configuration for async testing
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-ra -q --strict-markers --cov=src/trading_system --cov-report=term-missing"
+addopts = [
+    "-ra",
+    "-q",
+    "--strict-markers",
+    "--cov=src/trading_system",
+    "--cov-report=term-missing",
+    "--cov-report=html",  # NEW: Generate HTML coverage report
+    "--asyncio-mode=auto"  # NEW: Auto-detect async tests
+]
+
+# NEW: Add test markers for organizing tests
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "slow: Slow tests",
+    "smoke: Smoke tests"
+]
 
 [tool.black]
 line-length = 88
@@ -35,3 +64,23 @@ target-version = ['py311']
 python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
+# NEW: Stricter type checking for better code quality
+disallow_untyped_defs = true
+no_implicit_optional = true
+check_untyped_defs = true
+strict_optional = true
+
+# NEW: Coverage configuration
+[tool.coverage.run]
+source = ["src/trading_system"]
+omit = ["*/tests/*", "*/test_*.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:"
+]

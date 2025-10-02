@@ -1,0 +1,4 @@
+# file: /Users/burak.kadirbeyoglu/workspace/algo-trading-system/src/trading_system/shared_kernel/events.py
+# hypothesis_version: 6.139.2
+
+['BaseEvent', 'EventType', 'event_id', 'event_type', 'timestamp', 'version']

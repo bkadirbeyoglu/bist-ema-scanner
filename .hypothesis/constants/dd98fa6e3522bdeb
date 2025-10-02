@@ -1,0 +1,4 @@
+# file: /Users/burak.kadirbeyoglu/workspace/algo-trading-system/src/trading_system/domain/value_objects/money.py
+# hypothesis_version: 6.139.2
+
+['0', '0.01', '1', 'EUR', 'GBP', 'JPY', 'Money', 'TRY', 'USD', 'amount', 'currency']

@@ -1,0 +1,4 @@
+# file: /Users/burak.kadirbeyoglu/workspace/algo-trading-system/src/trading_system/domain/entities/order.py
+# hypothesis_version: 6.139.2
+
+['BUY', 'CANCELLED', 'FILLED', 'LIMIT', 'MARKET', 'Order', 'PENDING', 'REJECTED', 'SELL', 'STOP', 'STOP_LIMIT', 'SUBMITTED']

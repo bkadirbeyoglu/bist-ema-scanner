@@ -1,0 +1,4 @@
+# file: /Users/burak.kadirbeyoglu/workspace/algo-trading-system/src/trading_system/order_management/domain/events.py
+# hypothesis_version: 6.139.2
+
+['BUY', 'CANCELLED', 'FILLED', 'LIMIT', 'MARKET', 'OrderCreatedEvent', 'PARTIALLY_FILLED', 'PASSED', 'PENDING', 'REJECTED', 'SELL', 'STOP', 'STOP_LIMIT', 'SUBMITTED', 'VALIDATED', 'account_id', 'event_id', 'event_type', 'metadata', 'notional_value', 'order.created', 'order.rejected', 'order.validated', 'order_id', 'order_type', 'price', 'quantity', 'side', 'symbol', 'timestamp', 'version']

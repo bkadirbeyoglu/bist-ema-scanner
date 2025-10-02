@@ -1,0 +1,4 @@
+# file: /Users/burak.kadirbeyoglu/workspace/algo-trading-system/src/trading_system/domain/entities/trade.py
+# hypothesis_version: 6.139.2
+
+['0.001', '0.01', 'Trade']

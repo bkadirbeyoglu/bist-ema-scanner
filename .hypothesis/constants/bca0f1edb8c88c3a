@@ -1,0 +1,4 @@
+# file: /Users/burak.kadirbeyoglu/workspace/algo-trading-system/src/trading_system/shared_kernel/event_bus.py
+# hypothesis_version: 6.139.2
+
+['Event bus cleared', 'EventType', 'Handler error: %s', 'Unsubscribed %s', 'active_subscriptions', 'total_errors']
