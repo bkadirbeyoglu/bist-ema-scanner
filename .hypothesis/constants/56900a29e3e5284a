@@ -1,0 +1,4 @@
+# file: /Users/burak.kadirbeyoglu/workspace/algo-trading-system/src/trading_system/infrastructure/websocket/market_stream.py
+# hypothesis_version: 6.139.2
+
+[1000, 'Heartbeat ping sent', 'action', 'connected', 'errors', 'messages_processed', 'messages_received', 'queue_size', 'reconnections', 'subscribe', 'symbols']

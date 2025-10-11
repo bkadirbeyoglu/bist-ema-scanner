@@ -1,0 +1,4 @@
+# file: /Users/burak.kadirbeyoglu/workspace/algo-trading-system/src/trading_system/shared_kernel/logging_config.py
+# hypothesis_version: 6.139.2
+
+['INFO', 'args', 'correlation_id', 'created', 'exc_info', 'exc_text', 'exception', 'file', 'filename', 'funcName', 'function', 'level', 'levelname', 'levelno', 'line', 'lineno', 'logger', 'message', 'module', 'msecs', 'msg', 'name', 'pathname', 'process', 'processName', 'relativeCreated', 'stack_info', 'thread', 'threadName', 'timestamp', 'traceback', 'type']
