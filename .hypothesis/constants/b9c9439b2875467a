@@ -1,0 +1,4 @@
+# file: /Users/burak.kadirbeyoglu/workspace/algo-trading-system/src/trading_system/contexts/portfolio_management/domain/entities/portfolio.py
+# hypothesis_version: 6.139.2
+
+['10000.00', '50000.00', 'Currency mismatch', 'cash', 'positions', 'trades']

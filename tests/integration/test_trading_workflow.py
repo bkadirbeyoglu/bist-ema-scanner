@@ -2,11 +2,13 @@
 
 from decimal import Decimal
 import pytest
-from trading_system.domain.entities.portfolio import Portfolio
-from trading_system.domain.entities.trade import Trade
-from trading_system.domain.value_objects.symbol import Symbol
-from trading_system.domain.value_objects.money import Money
-from trading_system.domain.exceptions import InsufficientFundsError
+
+from trading_system.shared_kernel.exceptions import InsufficientFundsError
+from trading_system.shared_kernel.value_objects.symbol import Symbol
+from trading_system.contexts.portfolio_management.domain.entities.portfolio import Portfolio
+from trading_system.contexts.order_management.domain.events import OrderCreatedEvent
+from trading_system.contexts.portfolio_management.domain.entities.trade import Trade
+from trading_system.shared_kernel.value_objects.money import Money
 
 class TestTradingWorkflow:
 

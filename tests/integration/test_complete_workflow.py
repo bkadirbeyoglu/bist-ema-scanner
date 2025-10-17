@@ -32,12 +32,16 @@ import uuid
 from trading_system.shared_kernel.event_bus import InMemoryEventBus
 from trading_system.shared_kernel.events import BaseEvent
 from trading_system.shared_kernel.logging_config import setup_logging, log_context, get_logger
-from trading_system.order_management.domain.events import OrderCreatedEvent, OrderType, OrderSide
-from trading_system.domain.entities.portfolio import Portfolio
-from trading_system.domain.entities.trade import Trade, TradeType
-from trading_system.domain.value_objects.money import Money
-from trading_system.domain.value_objects.symbol import Symbol
-from trading_system.domain.value_objects.price import Price
+from trading_system.contexts.order_management.domain.entities.order import (
+    OrderSide,
+    OrderType,
+)
+from trading_system.shared_kernel.value_objects.symbol import Symbol
+from trading_system.contexts.portfolio_management.domain.entities.portfolio import Portfolio
+from trading_system.contexts.order_management.domain.events import OrderCreatedEvent
+from trading_system.contexts.portfolio_management.domain.entities.trade import Trade
+from trading_system.shared_kernel.value_objects.money import Money
+
 
 logger = get_logger(__name__)
 
