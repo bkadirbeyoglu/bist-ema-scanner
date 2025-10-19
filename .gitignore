@@ -30,3 +30,6 @@ htmlcov/
 logs/
 data/
 *.log
+
+# Hypothesis property-based testing cache
+.hypothesis/
