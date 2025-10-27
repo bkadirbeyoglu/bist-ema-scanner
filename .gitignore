@@ -33,3 +33,24 @@ data/
 
 # Hypothesis property-based testing cache
 .hypothesis/
+
+# Docker
+.env
+docker-compose.override.yml
+*.log
+
+# Volumes
+docker/postgres/*
+docker/redis/*
+docker/localstack/*
+!docker/*/.gitkeep
+
+# VS Code
+.vscode/
+!.vscode/launch.json
+
+# Python
+__pycache__/
+.pytest_cache/
+.coverage
+.mypy_cache/

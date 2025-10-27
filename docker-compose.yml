@@ -1,140 +1,104 @@
-# Docker Compose for Algorithmic Trading System
-# One file to define and run our multi-container application
 version: '3.8'
+
+# ============================================================
+# BASE CONFIGURATION
+# Use: docker-compose -f docker-compose.yml -f docker-compose.{env}.yml up
+# ============================================================
 
 services:
   # ============================================================
-  # Trading Application - Our Python trading system
+  # Trading Application
   # ============================================================
   trading-app:
     build:
       context: .
       dockerfile: Dockerfile
     
-    container_name: trading-app  # Remove this line to enable scaling
+    # No container_name in base (allows scaling)
     
     environment:
-      - TRADING_ENV=development
-      - DATABASE_URL=postgresql://postgres:password@postgres:5432/trading
-        # ↑ Uses service name 'postgres' - Docker DNS resolves it!
+      - TRADING_ENV=${TRADING_ENV:-development}
+      - DATABASE_URL=postgresql://${DB_USER:-trading}:${DB_PASSWORD:-password}@postgres:5432/${DB_NAME:-trading_db}
       - REDIS_URL=redis://redis:6379
-      - LOG_LEVEL=DEBUG
-    
-    # Load from .env file instead:
-    # env_file:
-    #   - .env.development
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
     
     depends_on:
-      - postgres  # Start postgres before trading-app
-      - redis     # Note: "started" ≠ "ready to accept connections"
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      localstack:
+        condition: service_started
     
     networks:
       - trading-network
-    
-    volumes:
-      - ./src:/app/src:ro  # Mount source for hot-reload (dev only)
-    
-    # Uncomment to access API from host:
-    # ports:
-    #   - "8000:8000"
-    
-    restart: unless-stopped
 
   # ============================================================
-  # PostgreSQL - Relational database
+  # PostgreSQL
   # ============================================================
   postgres:
-    image: postgres:15-alpine  # Alpine = smaller image (~50 MB)
-    container_name: postgres
+    image: postgres:15-alpine
     
     environment:
-      - POSTGRES_DB=trading
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=password  # ⚠️ Change in production!
+      - POSTGRES_DB=trading_db          # ← Hardcode this for now
+      - POSTGRES_USER=trading            # ← Hardcode this
+      - POSTGRES_PASSWORD=password       # ← Hardcode this
     
     volumes:
-      - postgres-data:/var/lib/postgresql/data  # Persist data
-      # Optional: Initialization scripts
-      # - ./init-scripts:/docker-entrypoint-initdb.d
+      # - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     
-    ports:
-      - "5432:5432"  # Expose for DBeaver, psql, etc.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-trading}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     
     networks:
       - trading-network
-    
-    restart: unless-stopped
 
   # ============================================================
-  # Redis - In-memory cache and message broker
+  # Redis
   # ============================================================
   redis:
     image: redis:7-alpine
-    container_name: redis
     
-    # Custom Redis configuration
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
-    # Policies: lru, allkeys-lru, volatile-lru, allkeys-random, noeviction
-    
-    ports:
-      - "6379:6379"  # Expose for redis-cli, RedisInsight
     
     networks:
       - trading-network
-    
-    restart: unless-stopped
 
   # ============================================================
-  # LocalStack - AWS services emulator (Day 4 Session 2)
+  # LocalStack
   # ============================================================
   localstack:
     image: localstack/localstack:latest
-    container_name: localstack
     
     environment:
-      - SERVICES=sqs,s3,dynamodb  # Which AWS services to emulate
+      - SERVICES=sqs,s3,dynamodb
       - DEFAULT_REGION=us-east-1
       - DOCKER_HOST=unix:///var/run/docker.sock
     
-    ports:
-      - "4566:4566"              # Main gateway for all AWS APIs
-      - "4510-4559:4510-4559"    # External service ports
-    
     volumes:
       - localstack-data:/var/lib/localstack
-      - "/var/run/docker.sock:/var/run/docker.sock"  # For Lambda execution
+      - /var/run/docker.sock:/var/run/docker.sock
     
     networks:
       - trading-network
 
-# ============================================================
-# Networks - Isolated communication channels
-# ============================================================
 networks:
   trading-network:
-    driver: bridge  # Custom bridge with automatic DNS
+    driver: bridge
     ipam:
       config:
-        - subnet: 172.28.0.0/16  # Custom subnet (avoids conflicts)
-          # Containers get IPs: 172.28.0.2, 172.28.0.3, etc.
+        - subnet: 172.28.0.0/16
 
-# ============================================================
-# Volumes - Data persistence
-# ============================================================
 volumes:
   postgres-data:
-    driver: local  # Stored at: /var/lib/docker/volumes/postgres-data/_data
-  
+    driver: local
   localstack-data:
-    driver: local  # Persists LocalStack resources between restarts
-
-# ============================================================
-# Common Commands:
-# ============================================================
-# Start:     docker-compose up -d
-# Stop:      docker-compose down
-# Logs:      docker-compose logs -f trading-app
-# Shell:     docker-compose exec trading-app bash
-# Rebuild:   docker-compose up --build
-# Scale:     docker-compose up -d --scale trading-app=3
-# ============================================================
+    driver: local

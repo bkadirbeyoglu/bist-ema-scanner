@@ -1,0 +1,72 @@
+version: '3.8'
+
+# ============================================================
+# DEVELOPMENT OVERRIDES
+# Use: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+# Or create alias: alias dcdev='docker-compose -f docker-compose.yml -f docker-compose.dev.yml'
+# ============================================================
+
+services:
+  trading-app:
+    # Development: Use container name for easier debugging
+    container_name: trading-app-dev
+    
+    # Development: Hot reload
+    volumes:
+      - ./src:/app/src:ro              # Source code hot reload
+      - ./tests:/app/tests:ro          # Test hot reload
+    
+    # Development: Detailed logging
+    environment:
+      - LOG_LEVEL=DEBUG
+      - ENABLE_DEBUG_TOOLBAR=true
+      - PYTHONUNBUFFERED=1             # See prints immediately
+    
+    # Development: Expose debugger port
+    ports:
+      - "8000:8000"     # API port
+      - "5678:5678"     # Python debugger port
+    
+    # Development: Faster startup (no health checks needed locally)
+    depends_on:
+      - postgres
+      - redis
+      - localstack
+
+  postgres:
+    container_name: postgres-dev
+    
+    # Development: Expose to host for pgAdmin/DBeaver
+    ports:
+      - "5432:5432"
+    
+    # Development: More verbose logging
+    environment:
+      - POSTGRES_INITDB_ARGS=--encoding=UTF8 --lc-collate=C --lc-ctype=C
+    
+    # Development: Store logs locally
+    volumes:
+      - ./docker/postgres/logs:/var/log/postgresql:rw
+
+  redis:
+    container_name: redis-dev
+    
+    # Development: Expose to host for redis-cli
+    ports:
+      - "6379:6379"
+    
+    # Development: Append-only file for persistence (useful for debugging)
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+
+  localstack:
+    container_name: localstack-dev
+    
+    # Development: Expose to host
+    ports:
+      - "4566:4566"
+      - "4510-4559:4510-4559"
+    
+    # Development: Enable debug mode
+    environment:
+      - DEBUG=1
+      - LS_LOG=trace
