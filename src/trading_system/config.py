@@ -13,8 +13,10 @@ Provides operating system interface
 """
 import os
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Literal
 from enum import Enum
+
+from trading_system.architecture.messaging.event_bus_factory import EventBusType
 
 
 class Environment(Enum):
@@ -129,6 +131,28 @@ class Config:
         "paper_trading": True,
         "backtesting": False,
     })
+
+    # ========== Event Bus Configuration ==========
+    # Just use the enum type directly
+    event_bus_type: EventBusType = field(
+        default_factory=lambda: EventBusType(
+            os.getenv("EVENT_BUS_TYPE", "in_memory")
+        )
+    )
+    
+    # SQS Configuration (only used if event_bus_type == SQS)
+    sqs_endpoint_url: Optional[str] = field(
+        default_factory=lambda: os.getenv("SQS_ENDPOINT_URL", "http://localstack:4566")
+    )
+    sqs_region: str = field(
+        default_factory=lambda: os.getenv("AWS_REGION", "us-east-1")
+    )
+    sqs_access_key: str = field(
+        default_factory=lambda: os.getenv("AWS_ACCESS_KEY_ID", "test")
+    )
+    sqs_secret_key: str = field(
+        default_factory=lambda: os.getenv("AWS_SECRET_ACCESS_KEY", "test")
+    )
     
     @classmethod
     def from_env(cls) -> "Config":
@@ -229,6 +253,29 @@ class Config:
                     "Risk checks must be enabled in production"
                 )
         
+        # ========== Event Bus Validations ==========
+        # Validate event bus type
+        if self.event_bus_type not in [EventBusType.IN_MEMORY, EventBusType.SQS]:
+            raise ValueError(
+                f"Invalid event_bus_type: {self.event_bus_type}. "
+                "Must be 'in_memory' or 'sqs'."
+            )
+        
+        # Production-specific validations
+        if self.env == "production":
+            # Don't use in-memory in production
+            if self.event_bus_type == EventBusType.IN_MEMORY:
+                raise ValueError(
+                    "In-memory event bus not suitable for production. Use 'sqs'."
+                )
+        
+        # Don't use LocalStack in production
+        if self.event_bus_type == EventBusType.SQS:
+            if self.sqs_endpoint_url and "localhost" in self.sqs_endpoint_url:
+                raise ValueError(
+                    "Cannot use LocalStack (localhost) in production"
+                )
+        
         # General validations
         if self.trading.max_order_value <= 0:
             raise ValueError("max_order_value must be positive")
@@ -248,6 +295,12 @@ class Config:
                     'xxx:xxx'
                 ),  # Mask credentials
                 "pool_size": self.database.pool_size,
+            },
+            "event_bus": {
+                "bus_type": self.event_bus_type.value,  # ← Get enum value
+                "sqs_endpoint_url": self.sqs_endpoint_url,
+                "sqs_region": self.sqs_region,
+                # Don't expose credentials in dict
             },
             "trading": {
                 "max_positions": self.trading.max_positions,
