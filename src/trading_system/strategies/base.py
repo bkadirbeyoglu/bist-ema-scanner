@@ -44,7 +44,7 @@ class TradingStrategy(ABC):
         self.name = name
         self.event_bus = event_bus
         self.config = config or {}
-        self.last_signal = Optional[TradingSignal] = None
+        self.last_signal: Optional[TradingSignal] = None
 
     @abstractmethod
     async def calculate_signal(self,

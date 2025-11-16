@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import List
 import statistics
 
-from trading_system.infrastructure.messaging.sqs_client import SQSClient
+from trading_system.architecture.messaging.sqs_client import SQSClient
 
 
 @dataclass

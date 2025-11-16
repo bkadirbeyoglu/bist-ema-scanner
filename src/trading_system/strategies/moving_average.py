@@ -58,9 +58,9 @@ class MovingAverageCrossoverStrategy(TradingStrategy):
         self.prev_fast_ma: Optional[float] = None
         self.prev_slow_ma: Optional[float] = None
 
-    async def calculate_signal(self, 
-                               market_data: pd.DataFrame,
-                               symbol: str):
+    def calculate_signal(self, 
+                        market_data: pd.DataFrame,
+                        symbol: str):
         """
         Calculate trading signal based on MA crossover.
         
@@ -203,7 +203,7 @@ class MovingAverageCrossoverStrategy(TradingStrategy):
         
         # Risk management: Max 5% of portfolio per position
         if signal.price:
-            max_position_value = float(portfolio.total_value) * 0.05
+            max_position_value = float(portfolio.total_value.amount) * 0.05
             max_shares = int(max_position_value / float(signal.price))
             adjusted_size = min(adjusted_size, max_shares)
         

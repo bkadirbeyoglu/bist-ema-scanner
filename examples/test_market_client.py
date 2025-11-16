@@ -9,8 +9,8 @@ from decimal import Decimal
 from dotenv import load_dotenv
 import os
 
-from trading_system.infrastructure.market_data.alpha_vantage import AlphaVantageClient
-from trading_system.domain.value_objects.symbol import Symbol
+from trading_system.contexts.market_data.infrastructure.alpha_vantage import AlphaVantageClient
+from trading_system.shared_kernel.value_objects.symbol import Symbol
 
 # Load environment variables
 load_dotenv()

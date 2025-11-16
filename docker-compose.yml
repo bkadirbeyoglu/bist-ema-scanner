@@ -1,5 +1,3 @@
-version: '3.8'
-
 # ============================================================
 # BASE CONFIGURATION
 # Use: docker-compose -f docker-compose.yml -f docker-compose.{env}.yml up
@@ -82,7 +80,11 @@ services:
       - SERVICES=sqs,s3,dynamodb
       - DEFAULT_REGION=us-east-1
       - DOCKER_HOST=unix:///var/run/docker.sock
-    
+
+    ports:
+      - "4566:4566"              # ← ADD THIS LINE!
+      - "4510-4559:4510-4559"    # ← ADD THIS LINE!
+
     volumes:
       - localstack-data:/var/lib/localstack
       - /var/run/docker.sock:/var/run/docker.sock

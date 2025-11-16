@@ -1,5 +1,3 @@
-version: '3.8'
-
 # ============================================================
 # DEVELOPMENT OVERRIDES
 # Use: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
@@ -8,8 +6,16 @@ version: '3.8'
 
 services:
   trading-app:
+    build:
+        context: .
+        dockerfile: Dockerfile
+        target: development  # ← This is critical!
+        
     # Development: Use container name for easier debugging
     container_name: trading-app-dev
+
+    # Keep container running for interactive use
+    command: sleep infinity  # ← ADD THIS LINE
     
     # Development: Hot reload
     volumes:

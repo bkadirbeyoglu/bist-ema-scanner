@@ -12,10 +12,8 @@ from typing import Dict, List, Callable, Type, Optional, Awaitable
 from dataclasses import dataclass
 from uuid import uuid4
 
-from trading_system.shared_kernel.events import BaseEvent
-from trading_system.shared_kernel.event_bus_protocol import EventBus  # ← Import ABC
-# ← Add this import:
-from trading_system.shared_kernel.event_bus_protocol import EventBus as EventBusProtocol
+from src.trading_system.shared_kernel.events import BaseEvent
+from src.trading_system.shared_kernel.event_bus_protocol import EventBus
 
 logger = logging.getLogger(__name__)
 

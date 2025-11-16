@@ -15,6 +15,14 @@ aiohttp = "^3.12.15"
 python-dotenv = "^1.1.1"
 websockets = "^15.0.1"
 aioboto3 = "15.4.0"
+psycopg2-binary = "^2.9.11"
+redis = "^7.0.0"
+pandas = "^2.3.3"
+numpy = "^2.3.4"
+yfinance = "^0.2.66"
+ta = "^0.11.0"
+backtrader = {git = "https://github.com/mementum/backtrader.git", rev = "master"}
+matplotlib = "^3.10.7"
 
 [tool.poetry.group.dev.dependencies]
 # Existing from Day 1

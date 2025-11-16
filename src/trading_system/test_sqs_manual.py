@@ -1,6 +1,6 @@
 import asyncio
 import json
-from trading_system.infrastructure.messaging.sqs_client import SQSClient
+from trading_system.architecture.messaging.sqs_client import SQSClient
 
 async def test_sqs():
     """Quick manual test of SQS client."""

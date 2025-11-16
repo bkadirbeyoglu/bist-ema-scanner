@@ -44,9 +44,9 @@ class RSIMeanReversionStrategy(TradingStrategy):
         self.oversold_threshold = oversold_threshold
         self.overbought_threshold = overbought_threshold
 
-    async def calculate_signal(self,
-                            market_data: pd.DataFrame,
-                            symbol: str) -> TradingSignal:
+    def calculate_signal(self,
+                        market_data: pd.DataFrame,
+                        symbol: str) -> TradingSignal:
         """Generate signal based on RSI levels"""
         
         # Calculate RSI
@@ -122,7 +122,7 @@ class RSIMeanReversionStrategy(TradingStrategy):
         
         # Risk limit: Max 3% of portfolio (more conservative)
         if signal.price:
-            max_position_value = float(portfolio.total_value) * 0.03
+            max_position_value = float(portfolio.total_value.amount) * 0.03
             max_shares = int(max_position_value / float(signal.price))
             adjusted_size = min(adjusted_size, max_shares)
         

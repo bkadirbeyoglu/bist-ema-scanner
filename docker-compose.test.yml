@@ -1,5 +1,3 @@
-version: '3.8'
-
 # ============================================================
 # TEST/CI OVERRIDES
 # Use: docker-compose -f docker-compose.yml -f docker-compose.test.yml up
