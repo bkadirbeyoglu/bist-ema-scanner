@@ -10,7 +10,7 @@ import pytest
 from datetime import datetime, timezone
 from typing import List
 
-from trading_system.shared_kernel.events import BaseEvent
+from trading_system.shared_kernel.base_event import BaseEvent
 from trading_system.architecture.messaging.sqs_client import SQSConfig, create_sqs_client
 from trading_system.architecture.messaging.sqs_event_bus import (
     SQSEventBus, get_queue_name_for_event

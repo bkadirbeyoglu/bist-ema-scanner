@@ -12,7 +12,7 @@ from typing import Dict, List, Callable, Type, Optional, Awaitable
 from dataclasses import dataclass
 from uuid import uuid4
 
-from src.trading_system.shared_kernel.events import BaseEvent
+from trading_system.shared_kernel.base_event import BaseEvent
 from src.trading_system.shared_kernel.event_bus_protocol import EventBus
 
 logger = logging.getLogger(__name__)

@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from uuid import uuid4
 from datetime import datetime
 
-from trading_system.shared_kernel.events import BaseEvent
+from trading_system.shared_kernel.base_event import BaseEvent
 from trading_system.shared_kernel.event_bus_protocol import EventBus
 from trading_system.architecture.messaging.sqs_client import (
     SQSClient,

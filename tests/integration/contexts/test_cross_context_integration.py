@@ -15,7 +15,7 @@ from trading_system.contexts.composition_root import ApplicationContext
 from trading_system.contexts.order_management.domain.entities.order import (
     OrderSide, OrderType
 )
-from trading_system.shared_kernel.events import BaseEvent
+from trading_system.shared_kernel.base_event import BaseEvent
 
 @pytest.fixture
 async def app_context():

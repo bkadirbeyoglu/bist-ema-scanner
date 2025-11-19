@@ -8,7 +8,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Dict, Any, List
 
-from trading_system.shared_kernel.events import BaseEvent
+from trading_system.shared_kernel.base_event import BaseEvent
 
 
 @dataclass(frozen=True)

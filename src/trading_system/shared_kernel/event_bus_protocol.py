@@ -10,7 +10,7 @@ making it easy to swap implementations (InMemory, SQS, Kafka, etc.)
 
 from typing import Protocol, Callable, Awaitable, Type, Optional, runtime_checkable
 
-from trading_system.shared_kernel.events import BaseEvent
+from trading_system.shared_kernel.base_event import BaseEvent
 
 
 @runtime_checkable  # ← Allows isinstance() checks at runtime

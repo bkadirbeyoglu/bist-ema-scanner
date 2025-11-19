@@ -22,7 +22,7 @@ from datetime import datetime
 from typing import ClassVar, Optional, Dict, Any
 from enum import Enum
 
-from trading_system.shared_kernel.events import BaseEvent
+from trading_system.shared_kernel.base_event import BaseEvent
 
 
 # ============================================

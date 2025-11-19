@@ -8,7 +8,7 @@ from datetime import datetime
 from trading_system.strategies.signals import TradingSignal, SignalType, SignalStrength
 from trading_system.contexts.portfolio_management.domain.entities.portfolio import Portfolio
 from trading_system.shared_kernel.event_bus import EventBus
-from trading_system.shared_kernel.events import BaseEvent
+from trading_system.shared_kernel.base_event import BaseEvent
 
 
 class StrategyEvent(BaseEvent):

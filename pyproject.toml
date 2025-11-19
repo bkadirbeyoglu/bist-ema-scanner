@@ -23,6 +23,7 @@ yfinance = "^0.2.66"
 ta = "^0.11.0"
 backtrader = {git = "https://github.com/mementum/backtrader.git", rev = "master"}
 matplotlib = "^3.10.7"
+asyncpg = "^0.30.0"
 
 [tool.poetry.group.dev.dependencies]
 # Existing from Day 1

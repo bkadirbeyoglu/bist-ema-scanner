@@ -23,7 +23,7 @@ from hypothesis.strategies import decimals, integers, text
 
 # These imports will fail initially - that's TDD!
 # We'll implement these classes after writing tests
-from trading_system.shared_kernel.events import BaseEvent, DomainEvent
+from trading_system.shared_kernel.base_event import BaseEvent, DomainEvent
 from trading_system.shared_kernel.event_bus import InMemoryEventBus
 from trading_system.contexts.order_management.domain.events import (
     OrderCreatedEvent,

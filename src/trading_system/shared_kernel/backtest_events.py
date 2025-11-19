@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Dict, Any
 from uuid import UUID, uuid4
 
-from src.trading_system.shared_kernel.events import BaseEvent
+from trading_system.shared_kernel.base_event import BaseEvent
 
 
 @dataclass(frozen=True)

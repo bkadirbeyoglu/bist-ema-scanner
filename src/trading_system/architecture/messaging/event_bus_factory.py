@@ -199,7 +199,7 @@ class EventBusManager:
 
 if __name__ == "__main__":
     import asyncio
-    from trading_system.shared_kernel.events import BaseEvent
+    from trading_system.shared_kernel.base_event import BaseEvent
     from datetime import datetime, timezone
     
     # Example event
