@@ -1,170 +1,126 @@
+# src/trading_system/architecture/event_store/postgres_event_store.py
 """
-PostgreSQL Event Store Implementation
+PostgreSQL Event Store Implementation.
 
-This is the heart of our event sourcing system. It provides:
-- Append-only event storage
-- Event stream retrieval
-- Event replay capabilities
-- Optimistic concurrency control
-
-DOMAIN CONCEPTS:
-- Event: Immutable record of something that happened
-- Aggregate: Domain object events relate to (Strategy, Backtest, etc.)
-- Stream: Sequence of events for one aggregate
-- Version: Order number within an aggregate's stream
+Provides append-only event storage with:
+1. Event persistence (store events)
+2. Event retrieval (query events)
+3. Version conflict detection (optimistic locking)
+4. Event replay support
 """
 
 import json
-import uuid
 import logging
-from typing import List, Optional, Dict, Any, Type
-from datetime import datetime
 from decimal import Decimal
+from datetime import datetime
+from enum import Enum
+from typing import Optional, List, Dict, Any
 
 import asyncpg
 
-from trading_system.shared_kernel.base_event import BaseEvent
 from trading_system.architecture.event_store.postgres_connection import PostgresConnectionPool
+from trading_system.shared_kernel.base_event import BaseEvent
 
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# CUSTOM EXCEPTIONS
-# ============================================================================
+class ConcurrencyError(Exception):
+    """Raised when optimistic concurrency check fails."""
+    pass
+
 
 class EventStoreError(Exception):
-    """Base exception for event store errors."""
+    """Raised when event store operation fails."""
     pass
 
-
-class ConcurrencyError(EventStoreError):
-    """
-    Raised when concurrent modification detected.
-    
-    Example: Two processes try to append event with same version.
-    """
-    pass
-
-
-class SerializationError(EventStoreError):
-    """Raised when event serialization/deserialization fails."""
-    pass
-
-
-# ============================================================================
-# EVENT STORE
-# ============================================================================
 
 class PostgresEventStore:
-    """
-    PostgreSQL-based event store.
+    """PostgreSQL-based event store for event sourcing."""
     
-    ARCHITECTURE PATTERN: Event Sourcing
-    Stores all domain events in append-only log.
-    Current state derived by replaying events.
+    def __init__(self, pool: PostgresConnectionPool):
+        """Initialize event store with connection pool."""
+        self.pool = pool
     
-    KEY FEATURES:
-    - Append-only (no updates/deletes)
-    - Optimistic concurrency control
-    - Event type registry for deserialization
-    - JSONB for flexible event storage
-    """
-    
-    def __init__(self, connection_pool: PostgresConnectionPool):
-        """
-        Initialize event store.
+    def _serialize_event(self, event: BaseEvent) -> dict:
+        """Serialize event to dictionary with JSON-safe types."""
+        if hasattr(event, 'to_dict'):
+            return event.to_dict()
         
-        Args:
-            connection_pool: PostgreSQL connection pool
-        """
-        self.pool = connection_pool.pool
+        # Fallback: manually serialize
+        result = {}
+        for key, value in event.__dict__.items():
+            if isinstance(value, Enum):
+                result[key] = value.value
+            elif isinstance(value, Decimal):
+                result[key] = str(value)
+            elif isinstance(value, datetime):
+                result[key] = value.isoformat()
+            else:
+                result[key] = value
         
-        # Event type registry for deserialization
-        self._event_registry: Dict[str, Type[BaseEvent]] = {}
-        self._register_default_events()
+        return result
     
-    def _register_default_events(self):
-        """Register all known event types."""
-        from trading_system.shared_kernel.signal_events import (
-            SignalGeneratedEvent
-        )
-        from trading_system.shared_kernel.backtest_events import (
-            BacktestCompletedEvent
-        )
-        from trading_system.contexts.order_management.domain.events import (
-            OrderCreatedEvent,
-            OrderValidatedEvent,
-            OrderRejectedEvent
-        )
+    @staticmethod
+    def _json_encoder(obj):
+        """Custom JSON encoder for types that json.dumps doesn't handle."""
+        if isinstance(obj, Enum):
+            return obj.value
+        if isinstance(obj, Decimal):
+            return str(obj)
+        if isinstance(obj, datetime):
+            return obj.isoformat()
         
-        # Register each event type by class name
-        for event_class in [
-            SignalGeneratedEvent,
-            BacktestCompletedEvent,
-            OrderCreatedEvent,
-            OrderValidatedEvent,
-            OrderRejectedEvent
-        ]:
-            self._event_registry[event_class.__name__] = event_class
+        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
     
-    def register_event_type(self, event_class: Type[BaseEvent]):
+    async def _get_aggregate_version(self, aggregate_id: str) -> int:
+        """Get current version for an aggregate."""
+        # FIXED: Added schema prefix 'events.events'
+        query = """
+        SELECT COALESCE(MAX(version), -1) as version
+        FROM events.events
+        WHERE aggregate_id = $1
         """
-        Register custom event type.
         
-        EXTENSIBILITY: Allow registering new event types at runtime
-        """
-        self._event_registry[event_class.__name__] = event_class
+        row = await self.pool.fetchrow(query, aggregate_id)
+        return row['version'] if row else -1
     
-    def _get_event_class(self, event_type: str) -> Type[BaseEvent]:
-        """Get event class from registry."""
-        if event_type not in self._event_registry:
-            raise SerializationError(f"Unknown event type: {event_type}")
-        return self._event_registry[event_type]
-    
-    # ========================================================================
-    # APPEND OPERATIONS
-    # ========================================================================
+    async def _get_next_version(self, aggregate_id: str) -> int:
+        """Get next version number for an aggregate."""
+        current = await self._get_aggregate_version(aggregate_id)
+        return current + 1
     
     async def append(
         self,
         event: BaseEvent,
         expected_version: Optional[int] = None
     ) -> int:
-        """
-        Append event to store.
-        
-        OPTIMISTIC CONCURRENCY CONTROL:
-        If expected_version is provided, will fail if aggregate's
-        current version doesn't match. This prevents lost updates.
-        
-        Returns:
-            Sequence number of appended event
-        
-        Raises:
-            ConcurrencyError: If version mismatch detected
-        """
+        """Append event to store."""
         try:
-            # Serialize event to JSON
-            payload = self._serialize_event(event)
+            # Step 1: Get current version and determine next version
+            current_version = await self._get_aggregate_version(event.aggregate_id)
             
-            # Get next version for this aggregate
+            # Step 2: Check optimistic locking if expected_version provided
             if expected_version is not None:
-                current_version = await self._get_aggregate_version(
-                    event.aggregate_id
-                )
                 if current_version != expected_version:
                     raise ConcurrencyError(
                         f"Version mismatch for aggregate {event.aggregate_id}: "
                         f"expected {expected_version}, got {current_version}"
                     )
-                next_version = expected_version + 1
-            else:
-                next_version = await self._get_next_version(event.aggregate_id)
             
-            # Insert event
+            # Step 3: Calculate next version
+            next_version = current_version + 1
+            
+            # Step 4: Serialize event to dictionary
+            payload = self._serialize_event(event)
+            
+            # CRITICAL FIX: Override the version in payload with next_version
+            # This ensures the stored event has the correct version,
+            # not the version=0 default from the event object
+            payload['version'] = next_version
+            
+            # Step 5: Insert event with correct version
             query = """
-                INSERT INTO events (
+                INSERT INTO events.events (
                     event_id,
                     event_type,
                     aggregate_id,
@@ -172,9 +128,12 @@ class PostgresEventStore:
                     payload,
                     occurred_at,
                     version
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
                 RETURNING sequence_number
             """
+            
+            # Convert payload to JSON string with custom encoder
+            payload_json = json.dumps(payload, default=self._json_encoder)
             
             sequence_number = await self.pool.fetchval(
                 query,
@@ -182,9 +141,9 @@ class PostgresEventStore:
                 type(event).__name__,
                 event.aggregate_id,
                 event.aggregate_type if hasattr(event, 'aggregate_type') else 'Unknown',
-                json.dumps(payload),
+                payload_json,
                 event.occurred_at,
-                next_version
+                next_version  # Use calculated next_version
             )
             
             logger.info(
@@ -199,261 +158,204 @@ class PostgresEventStore:
             )
             
             return sequence_number
-            
+        
         except asyncpg.UniqueViolationError as e:
-            # UNIQUE constraint on (aggregate_id, version) violated
             raise ConcurrencyError(
                 f"Concurrent modification detected for aggregate "
                 f"{event.aggregate_id}"
             ) from e
+        except ConcurrencyError:
+            # Re-raise ConcurrencyError without wrapping
+            raise
         except Exception as e:
             logger.error(f"Failed to append event: {e}", exc_info=True)
             raise EventStoreError(f"Append failed: {e}") from e
     
-    # ========================================================================
-    # QUERY OPERATIONS
-    # ========================================================================
-    
-    async def get_stream(
+    async def get_events(
         self,
         aggregate_id: str,
-        from_version: int = 1
-    ) -> List[BaseEvent]:
-        """
-        Get all events for an aggregate.
-        
-        This is the core of event sourcing: retrieve all events
-        that happened to one aggregate, in order.
-        
-        Example:
-            # Get all signals from MA strategy for AAPL
-            events = await store.get_stream("strategy-MovingAverage-AAPL")
-        """
+        from_version: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Get all events for an aggregate, starting from a specific version."""
         query = """
-            SELECT 
-                event_id,
-                event_type,
-                aggregate_id,
-                aggregate_type,
-                payload,
-                occurred_at,
-                version,
-                sequence_number
-            FROM events
-            WHERE aggregate_id = $1 AND version >= $2
-            ORDER BY version ASC
+        SELECT 
+            event_id,
+            event_type,
+            aggregate_id,
+            aggregate_type,
+            version,
+            payload,
+            occurred_at,
+            sequence_number
+        FROM events.events
+        WHERE aggregate_id = $1 AND version >= $2
+        ORDER BY sequence_number ASC
         """
         
         rows = await self.pool.fetch(query, aggregate_id, from_version)
         
-        events = [self._deserialize_event(row) for row in rows]
+        events = []
+        for row in rows:
+            # Parse JSON payload if it's a string
+            payload = row["payload"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            
+            event_data = {
+                "event_id": row["event_id"],
+                "event_type": row["event_type"],
+                "aggregate_id": row["aggregate_id"],
+                "aggregate_type": row["aggregate_type"],
+                "version": row["version"],
+                "occurred_at": row["occurred_at"],
+                "sequence_number": row["sequence_number"],
+                **payload
+            }
+            events.append(event_data)
         
-        logger.debug(
-            f"Retrieved {len(events)} events for aggregate {aggregate_id}"
-        )
-        
+        logger.debug(f"Retrieved {len(events)} events for aggregate {aggregate_id}")
         return events
-    
-    async def get_events_since(
-        self,
-        sequence_number: int,
-        limit: int = 1000
-    ) -> List[BaseEvent]:
-        """
-        Get events since a sequence number.
-        
-        USAGE: Event projection, catch-up subscriptions
-        """
-        query = """
-            SELECT 
-                event_id,
-                event_type,
-                aggregate_id,
-                aggregate_type,
-                payload,
-                occurred_at,
-                version,
-                sequence_number
-            FROM events
-            WHERE sequence_number > $1
-            ORDER BY sequence_number ASC
-            LIMIT $2
-        """
-        
-        rows = await self.pool.fetch(query, sequence_number, limit)
-        return [self._deserialize_event(row) for row in rows]
     
     async def get_events_by_type(
         self,
         event_type: str,
-        limit: int = 1000
-    ) -> List[BaseEvent]:
-        """
-        Get all events of a specific type.
-        
-        Example:
-            # Get all signal events
-            signals = await store.get_events_by_type("SignalGeneratedEvent")
-        """
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """Get recent events of a specific type."""
         query = """
+        SELECT 
+            event_id,
+            event_type,
+            aggregate_id,
+            aggregate_type,
+            version,
+            payload,
+            occurred_at,
+            sequence_number
+        FROM events.events
+        WHERE event_type = $1
+        ORDER BY occurred_at DESC
+        LIMIT $2
+        """
+        
+        rows = await self.pool.fetch(query, event_type, limit)
+        
+        events = []
+        for row in rows:
+            # Parse JSON payload if it's a string
+            payload = row["payload"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            
+            event_data = {
+                "event_id": row["event_id"],
+                "event_type": row["event_type"],
+                "aggregate_id": row["aggregate_id"],
+                "aggregate_type": row["aggregate_type"],
+                "version": row["version"],
+                "occurred_at": row["occurred_at"],
+                "sequence_number": row["sequence_number"],
+                **payload
+            }
+            events.append(event_data)
+        
+        logger.debug(f"Retrieved {len(events)} events of type {event_type}")
+        return events
+    
+    async def get_events_by_time_range(
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        aggregate_type: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Get events within a time range."""
+        if aggregate_type:
+            query = """
             SELECT 
                 event_id,
                 event_type,
                 aggregate_id,
                 aggregate_type,
+                version,
                 payload,
                 occurred_at,
-                version,
                 sequence_number
-            FROM events
-            WHERE event_type = $1
-            ORDER BY sequence_number ASC
-            LIMIT $2
-        """
-        
-        rows = await self.pool.fetch(query, event_type, limit)
-        return [self._deserialize_event(row) for row in rows]
-    
-    async def get_events_in_range(
-        self,
-        start_time: datetime,
-        end_time: datetime,
-        event_type: Optional[str] = None
-    ) -> List[BaseEvent]:
-        """
-        Get events within a time range.
-        
-        USAGE: Analysis, reporting, debugging
-        
-        Example:
-            # Get all signals from yesterday
-            yesterday_signals = await store.get_events_in_range(
-                start_time=datetime(2024, 3, 14),
-                end_time=datetime(2024, 3, 15),
-                event_type="SignalGeneratedEvent"
-            )
-        """
-        if event_type:
-            query = """
-                SELECT 
-                    event_id,
-                    event_type,
-                    aggregate_id,
-                    aggregate_type,
-                    payload,
-                    occurred_at,
-                    version,
-                    sequence_number
-                FROM events
-                WHERE occurred_at >= $1 
-                  AND occurred_at < $2
-                  AND event_type = $3
-                ORDER BY occurred_at ASC
+            FROM events.events
+            WHERE occurred_at >= $1 
+              AND occurred_at <= $2
+              AND aggregate_type = $3
+            ORDER BY occurred_at ASC
             """
-            rows = await self.pool.fetch(query, start_time, end_time, event_type)
+            rows = await self.pool.fetch(query, start_time, end_time, aggregate_type)
         else:
             query = """
-                SELECT 
-                    event_id,
-                    event_type,
-                    aggregate_id,
-                    aggregate_type,
-                    payload,
-                    occurred_at,
-                    version,
-                    sequence_number
-                FROM events
-                WHERE occurred_at >= $1 AND occurred_at < $2
-                ORDER BY occurred_at ASC
+            SELECT 
+                event_id,
+                event_type,
+                aggregate_id,
+                aggregate_type,
+                version,
+                payload,
+                occurred_at,
+                sequence_number
+            FROM events.events
+            WHERE occurred_at >= $1 
+              AND occurred_at <= $2
+            ORDER BY occurred_at ASC
             """
             rows = await self.pool.fetch(query, start_time, end_time)
         
-        return [self._deserialize_event(row) for row in rows]
-    
-    # ========================================================================
-    # HELPER METHODS
-    # ========================================================================
-    
-    async def _get_aggregate_version(self, aggregate_id: str) -> int:
-        """Get current version of aggregate."""
-        query = """
-            SELECT COALESCE(MAX(version), 0)
-            FROM events
-            WHERE aggregate_id = $1
-        """
-        return await self.pool.fetchval(query, aggregate_id)
-    
-    async def _get_next_version(self, aggregate_id: str) -> int:
-        """Get next version number for aggregate."""
-        current = await self._get_aggregate_version(aggregate_id)
-        return current + 1
-    
-    def _serialize_event(self, event: BaseEvent) -> Dict[str, Any]:
-        """Serialize event to JSON-compatible dict."""
-        payload = {}
+        events = []
+        for row in rows:
+            # Parse JSON payload if it's a string
+            payload = row["payload"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            
+            event_data = {
+                "event_id": row["event_id"],
+                "event_type": row["event_type"],
+                "aggregate_id": row["aggregate_id"],
+                "aggregate_type": row["aggregate_type"],
+                "version": row["version"],
+                "occurred_at": row["occurred_at"],
+                "sequence_number": row["sequence_number"],
+                **payload
+            }
+            events.append(event_data)
         
-        for key, value in event.__dict__.items():
-            if isinstance(value, Decimal):
-                payload[key] = str(value)
-            elif isinstance(value, datetime):
-                payload[key] = value.isoformat()
-            elif isinstance(value, uuid.UUID):
-                payload[key] = str(value)
-            else:
-                payload[key] = value
-        
-        return payload
-    
-    def _deserialize_event(self, row: asyncpg.Record) -> BaseEvent:
-        """Deserialize event from database row."""
-        event_type = row['event_type']
-        event_class = self._get_event_class(event_type)
-        
-        # Parse JSON payload
-        payload = json.loads(row['payload']) if isinstance(row['payload'], str) else row['payload']
-        
-        # Reconstruct event
-        if hasattr(event_class, 'from_dict'):
-            return event_class.from_dict(payload)
-        
-        # Fallback: Try to construct directly
-        return event_class(**payload)
-    
-    # ========================================================================
-    # STATISTICS & MONITORING
-    # ========================================================================
+        logger.debug(
+            f"Retrieved {len(events)} events from {start_time} to {end_time}"
+        )
+        return events
     
     async def get_statistics(self) -> Dict[str, Any]:
         """Get event store statistics."""
-        stats_query = """
-            SELECT 
-                COUNT(*) as total_events,
-                COUNT(DISTINCT aggregate_id) as total_aggregates,
-                COUNT(DISTINCT event_type) as total_event_types,
-                MIN(occurred_at) as first_event_at,
-                MAX(occurred_at) as last_event_at
-            FROM events
+        # Total events
+        total_query = "SELECT COUNT(*) as count FROM events.events"
+        
+        # By event type
+        by_type_query = """
+        SELECT event_type, COUNT(*) as count
+        FROM events.events
+        GROUP BY event_type
+        ORDER BY count DESC
         """
         
-        stats = await self.pool.fetchrow(stats_query)
-        
-        type_breakdown_query = """
-            SELECT event_type, COUNT(*) as count
-            FROM events
-            GROUP BY event_type
-            ORDER BY count DESC
+        # By aggregate type
+        by_aggregate_query = """
+        SELECT aggregate_type, COUNT(*) as count
+        FROM events.events
+        GROUP BY aggregate_type
+        ORDER BY count DESC
         """
         
-        type_breakdown = await self.pool.fetch(type_breakdown_query)
+        total_row = await self.pool.fetchrow(total_query)
+        type_rows = await self.pool.fetch(by_type_query)
+        aggregate_rows = await self.pool.fetch(by_aggregate_query)
         
         return {
-            "total_events": stats['total_events'],
-            "total_aggregates": stats['total_aggregates'],
-            "total_event_types": stats['total_event_types'],
-            "first_event_at": stats['first_event_at'],
-            "last_event_at": stats['last_event_at'],
-            "events_by_type": {
-                row['event_type']: row['count'] 
-                for row in type_breakdown
-            }
+            "total_events": total_row["count"],
+            "event_types": {row["event_type"]: row["count"] for row in type_rows},
+            "aggregate_types": {row["aggregate_type"]: row["count"] for row in aggregate_rows}
         }

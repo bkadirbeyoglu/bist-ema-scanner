@@ -39,6 +39,9 @@ services:
   # ============================================================
   postgres:
     image: postgres:15-alpine
+
+    ports:
+      - "5432:5432"  # ← ADD THIS LINE!
     
     environment:
       - POSTGRES_DB=trading_db          # ← Hardcode this for now
