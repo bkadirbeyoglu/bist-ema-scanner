@@ -202,3 +202,55 @@ class StrategyQueryService:
             completed_at=row['completed_at'],
             last_updated=row['last_updated']
         )
+    
+    async def get_backtest_summaries(
+        self,
+        strategy_name: Optional[str] = None,
+        limit: int = 100
+    ) -> List[BacktestSummary]:
+        """Get backtest summaries, optionally filtered by strategy."""
+        async with self.pool.pool.acquire() as conn:
+            if strategy_name:
+                rows = await conn.fetch("""
+                    SELECT * FROM read_models.backtest_summaries
+                    WHERE strategy_name = $1
+                    ORDER BY completed_at DESC
+                    LIMIT $2
+                """, strategy_name, limit)
+            else:
+                rows = await conn.fetch("""
+                    SELECT * FROM read_models.backtest_summaries
+                    ORDER BY completed_at DESC
+                    LIMIT $1
+                """, limit)
+            
+            return [self._row_to_backtest_summary(row) for row in rows]
+    
+    async def get_backtest_by_id(self, backtest_id: str) -> Optional[BacktestSummary]:
+        """Get a specific backtest by ID."""
+        async with self.pool.pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT * FROM read_models.backtest_summaries
+                WHERE backtest_id = $1
+            """, backtest_id)
+            
+            if not row:
+                return None
+            
+            return self._row_to_backtest_summary(row)
+    
+    def _row_to_backtest_summary(self, row) -> BacktestSummary:
+        """Convert database row to BacktestSummary."""
+        return BacktestSummary(
+            backtest_id=row['backtest_id'],
+            strategy_name=row['strategy_name'],
+            symbol=row['symbol'],
+            parameters=row['parameters'] if row['parameters'] else {},
+            total_return=row['total_return'],
+            sharpe_ratio=row['sharpe_ratio'],
+            max_drawdown=row['max_drawdown'],
+            start_date=row['start_date'],
+            end_date=row['end_date'],
+            completed_at=row['completed_at'],
+            last_updated=row['last_updated']  # ← Don't forget this!
+        )

@@ -24,6 +24,11 @@ ta = "^0.11.0"
 backtrader = {git = "https://github.com/mementum/backtrader.git", rev = "master"}
 matplotlib = "^3.10.7"
 asyncpg = "^0.30.0"
+fastapi = "^0.121.3"
+uvicorn = {extras = ["standard"], version = "^0.38.0"}
+python-jose = {extras = ["cryptography"], version = "^3.5.0"}
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+python-multipart = "^0.0.20"
 
 [tool.poetry.group.dev.dependencies]
 # Existing from Day 1
@@ -38,6 +43,7 @@ mypy = "^1.5"
 pytest-asyncio = "^0.21.1"  # For testing async event bus
 hypothesis = "^6.90.0"      # For property-based testing
 ipdb = "^0.13.13"          # Interactive Python debugger
+httpx = "^0.28.1"
 
 [build-system]
 requires = ["poetry-core"]
