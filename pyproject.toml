@@ -44,6 +44,7 @@ pytest-asyncio = "^0.21.1"  # For testing async event bus
 hypothesis = "^6.90.0"      # For property-based testing
 ipdb = "^0.13.13"          # Interactive Python debugger
 httpx = "^0.28.1"
+aiohttp = "^3.13.2"
 
 [build-system]
 requires = ["poetry-core"]
