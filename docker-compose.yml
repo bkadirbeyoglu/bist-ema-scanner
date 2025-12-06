@@ -101,6 +101,58 @@ services:
     networks:
       - trading-network
 
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MARKET DATA SERVICE (NEW MICROSERVICE!)
+  # ═══════════════════════════════════════════════════════════════════════════
+  market-data-service:
+    build:
+      context: ./services/market-data-service
+      dockerfile: Dockerfile
+    
+    container_name: market-data-service
+    
+    ports:
+      - "8001:8001"
+    
+    environment:
+      # Service configuration
+      - MARKET_DATA_SERVICE_NAME=market-data-service
+      - MARKET_DATA_ENVIRONMENT=development
+      - MARKET_DATA_PORT=8001
+      
+      # AWS/LocalStack (dummy credentials - LocalStack doesn't validate)
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+      - MARKET_DATA_AWS_REGION=us-east-1
+      - MARKET_DATA_AWS_ENDPOINT_URL=http://localstack:4566
+      - MARKET_DATA_SQS_PRICE_QUEUE_NAME=market-data-prices
+      
+      # Data source
+      - MARKET_DATA_DATA_SOURCE=mock
+      - MARKET_DATA_PRICE_UPDATE_INTERVAL_MS=1000
+      
+      # Logging
+      - MARKET_DATA_LOG_LEVEL=INFO
+      - MARKET_DATA_LOG_JSON=true
+    
+    depends_on:
+      localstack:
+        condition: service_healthy
+    
+    networks:
+      - trading-network
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    restart: unless-stopped
+
+
 networks:
   trading-network:
     driver: bridge
@@ -113,3 +165,5 @@ volumes:
     driver: local
   localstack-data:
     driver: local
+
+
