@@ -1,0 +1,47 @@
+[tool.poetry]
+name = "order-service"
+version = "1.0.0"
+description = "Order Management Service with Saga orchestration"
+authors = ["Burak Kadirbeyoglu <bkadirbeyoglu@gmail.com>"]
+readme = "README.md"
+packages = [{include = "order_service", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.109.0"
+uvicorn = {extras = ["standard"], version = "^0.27.0"}
+pydantic = "^2.5.0"
+pydantic-settings = "^2.1.0"
+aioboto3 = "^12.0.0"
+httpx = "^0.26.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-asyncio = "^0.23.0"
+pytest-cov = "^4.1.0"
+mypy = "^1.8.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+# Fix VS Code/Pylance import errors with src layout
+[tool.pyright]
+extraPaths = ["src"]
+
+# Fix Pylint import errors with src layout
+[tool.pylint.main]
+source-roots = ["src"]
