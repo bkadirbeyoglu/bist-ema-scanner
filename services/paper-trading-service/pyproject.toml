@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "paper-trading-service"
+version = "0.1.0"
+description = "Paper Trading Service - Virtual portfolio simulation"
+authors = ["Your Name <your.email@example.com>"]
+packages = [{include = "paper_trading_service", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+pydantic = "^2.5.0"
+pydantic-settings = "^2.1.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-cov = "^4.1.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
