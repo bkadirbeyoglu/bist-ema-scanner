@@ -35,15 +35,15 @@ from decimal import Decimal
 from enum import Enum, auto
 from uuid import UUID, uuid4
 
-from paper_trading_service.domain.portfolio import VirtualPortfolio, PortfolioSnapshot
-from paper_trading_service.domain.order_simulator import (
-    OrderSimulator,
-    OrderRequest,
-    OrderResult,
-    OrderSide,
-    OrderType,
-)
-from paper_trading_service.domain.trade_journal import TradeJournal, TradeRecord
+from paper_trading_service.domain.portfolio import VirtualPortfolio
+from paper_trading_service.domain.portfolio import PortfolioSnapshot
+from paper_trading_service.domain.order_simulator import OrderSimulator
+from paper_trading_service.domain.order_simulator import OrderRequest
+from paper_trading_service.domain.order_simulator import OrderResult
+from paper_trading_service.domain.order_simulator import OrderSide
+from paper_trading_service.domain.order_simulator import OrderType
+from paper_trading_service.domain.trade_journal import TradeJournal
+from paper_trading_service.domain.trade_journal import TradeRecord
 
 
 class SessionState(Enum):

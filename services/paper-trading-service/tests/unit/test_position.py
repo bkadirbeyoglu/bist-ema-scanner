@@ -8,7 +8,8 @@ from decimal import Decimal
 
 import pytest
 
-from paper_trading_service.domain.position import Position, PositionSide
+from paper_trading_service.domain.position import Position
+from paper_trading_service.domain.position import PositionSide
 
 
 class TestPositionCreation:

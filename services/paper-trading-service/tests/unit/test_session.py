@@ -6,10 +6,8 @@ from decimal import Decimal
 
 import pytest
 
-from paper_trading_service.domain.session import (
-    PaperTradingSession,
-    SessionState,
-)
+from paper_trading_service.domain.session import PaperTradingSession
+from paper_trading_service.domain.session import SessionState
 from paper_trading_service.domain.order_simulator import OrderSide
 
 

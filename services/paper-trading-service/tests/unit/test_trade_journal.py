@@ -6,7 +6,8 @@ from decimal import Decimal
 
 import pytest
 
-from paper_trading_service.domain.trade_journal import TradeJournal, TradeRecord
+from paper_trading_service.domain.trade_journal import TradeJournal
+from paper_trading_service.domain.trade_journal import TradeRecord
 from paper_trading_service.domain.order_simulator import OrderSide
 
 

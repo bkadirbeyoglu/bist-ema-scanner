@@ -6,13 +6,11 @@ from decimal import Decimal
 
 import pytest
 
-from paper_trading_service.domain.order_simulator import (
-    OrderSimulator,
-    OrderRequest,
-    OrderResult,
-    OrderSide,
-    OrderType,
-)
+from paper_trading_service.domain.order_simulator import OrderSimulator
+from paper_trading_service.domain.order_simulator import OrderRequest
+from paper_trading_service.domain.order_simulator import OrderResult
+from paper_trading_service.domain.order_simulator import OrderSide
+from paper_trading_service.domain.order_simulator import OrderType
 
 
 class TestMarketOrders:
