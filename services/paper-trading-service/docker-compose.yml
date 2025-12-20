@@ -1,0 +1,85 @@
+# =============================================================================
+# Paper Trading Service - Docker Compose
+# =============================================================================
+#
+# Services:
+# - paper-trading: The Paper Trading Service API
+# - localstack: Local AWS services (SQS)
+#
+# Usage:
+#   docker-compose up -d          # Start all services
+#   docker-compose logs -f        # View logs
+#   docker-compose down           # Stop services
+#   docker-compose down -v        # Stop and remove volumes
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Paper Trading Service
+  # ---------------------------------------------------------------------------
+  paper-trading:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: paper-trading-service
+    ports:
+      - "8002:8002"
+    environment:
+      - PAPER_TRADING_API_HOST=0.0.0.0
+      - PAPER_TRADING_API_PORT=8002
+      - PAPER_TRADING_SQS_ENDPOINT_URL=http://localstack:4566
+      - PAPER_TRADING_SQS_REGION=us-east-1
+      - PAPER_TRADING_SIGNAL_QUEUE_NAME=trading-signals
+      - PAPER_TRADING_SQS_ENABLED=true
+      # AWS credentials for LocalStack (values don't matter, but must be set)
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+    depends_on:
+      localstack:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/api/v1/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - trading-network
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # LocalStack (Local AWS Services)
+  # ---------------------------------------------------------------------------
+  localstack:
+    image: localstack/localstack:3.0
+    container_name: paper-trading-localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=sqs
+      - DEBUG=0
+    volumes:
+      - localstack-data:/var/lib/localstack
+      - ./init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - trading-network
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  trading-network:
+    driver: bridge
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  localstack-data:
