@@ -12,17 +12,20 @@ pydantic-settings = "^2.1.0"
 fastapi = "^0.125.0"
 uvicorn = "^0.38.0"
 aioboto3 = "^15.5.0"
+redis = "^7.1.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
 pytest-cov = "^4.1.0"
 httpx = "^0.28.1"
+pytest-asyncio = "0.23.8"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+asyncio_mode = "auto"
 
 [tool.pylint.main]
 # Tell Pylint where to find our package

@@ -71,6 +71,17 @@ services:
     networks:
       - trading-network
 
+  redis:
+    image: redis:7-alpine
+    container_name: trading-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 # =============================================================================
 # Networks
 # =============================================================================
@@ -83,3 +94,4 @@ networks:
 # =============================================================================
 volumes:
   localstack-data:
+  redis-data:
