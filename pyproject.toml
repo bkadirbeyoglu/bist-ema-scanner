@@ -45,6 +45,8 @@ hypothesis = "^6.90.0"      # For property-based testing
 ipdb = "^0.13.13"          # Interactive Python debugger
 httpx = "^0.28.1"
 aiohttp = "^3.13.2"
+types-boto3 = "^1.42.15"
+types-aiobotocore-sns = "^3.0.0"
 
 [build-system]
 requires = ["poetry-core"]

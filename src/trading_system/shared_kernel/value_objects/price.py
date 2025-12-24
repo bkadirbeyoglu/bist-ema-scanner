@@ -1,99 +1,139 @@
 """
-Price Value Object - Represents monetary value in our trading system.
+Market Data Domain Entities.
 
-Key Python concepts used:
-1. @dataclass - Reduces boilerplate code for classes.
-2. Type hints - Improves code readability and IDE support
-3. __post_init__ - Validates data after initialization
-4. @property - Creates read-only attributes
+Core business objects for the Market Data Service.
+Pure domain objects with no infrastructure dependencies.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
-from typing import Union
+from typing import Optional
+from enum import Enum
 
 
-@dataclass(frozen=True)  # frozen=True makes the instance immutable
+class PriceSource(str, Enum):
+    """
+    Enumeration of price data sources.
+    
+    PYTHON FEATURE: str, Enum dual inheritance
+    ──────────────────────────────────────────
+    Inheriting from BOTH str and Enum makes the enum value behave as a string:
+    
+    - String comparison works:  PriceSource.MOCK == "mock"  → True
+    - JSON serialization works: json.dumps({"source": PriceSource.MOCK})
+                                → '{"source": "mock"}'
+    
+    Without str inheritance (plain Enum):
+    - PriceSource.MOCK == "mock"  → False (must use PriceSource.MOCK.value to get "mock")
+    - json.dumps() raises TypeError (not serializable)
+    
+    See DEEP DIVE section below for more details.
+    """
+    MOCK = "mock"
+    ALPHA_VANTAGE = "alpha_vantage"
+    YAHOO = "yahoo"
+    WEBSOCKET = "websocket"
+
+
+@dataclass(frozen=True)
 class Price:
     """
-    Immutable value object representing a price.
-
-    Why use @dataclass?
-    - Automatically generates __init__, __repr__, __eq__ methods.
-    - Reduces boilerplate code significantly
-    - frozen=True ensures immutability (can't change after creation)
-
-    Why use Decimal instead of float?
-    - Float has precison issues (0.1 + 0.2 != 0.3 in float)
-    - Decimal provides exact decimal arithmetic
-    - Critical for financial calculations
+    A single price point for a security.
+    
+    frozen=True makes it immutable (like a Value Object in DDD).
     """
-
-    value: Decimal  # Type hint: tells Python and IDEs this should be a Decimal
-
+    symbol: str
+    price: Decimal          # Always use Decimal for money!
+    timestamp: datetime
+    source: PriceSource
+    
     def __post_init__(self):
-        """
-        Called automatically after __init__ by dataclass.
-        Used for validation and type conversion.
+        """Validate after creation."""
+        if not self.symbol or not self.symbol.strip():
+            raise ValueError("Symbol cannot be empty")
+        if self.price <= 0:
+            raise ValueError(f"Price must be positive, got {self.price}")
 
-        Why __post_init__?
-        - Dataclass already created __init__ for us
-        - We need additional validation/conversion logic
-        - Runs after the object is initialized
-        """
-        # Convert to Decimal if needed (handles int, float, string inputs)
-        if not isinstance(self.value, Decimal):
-            # object.__setattr__ used because dataclass is frozen (immutable)
-            # This is the only way to set attributes in a frozen dataclass
-            object.__setattr__(self, "value", Decimal(str(self.value)))
 
-        # Validate: prices can't be negative
-        if self.value < 0:
-            raise ValueError(f"Price cannot be negative: {self.value}")
-
-    def __str__(self):
-        """
-        User-friendly string representation.
-        Called by str(price) or print(price)
-
-        Why override __str__?
-        - Provides human-readable output
-        - Better than default object representation
-        """
-        return f"${self.value:.2f}"
+@dataclass(frozen=True)
+class Quote:
+    """
+    Full quote with bid/ask spread and volume.
     
-    def add(self, other: 'Price') -> 'Price':
-        """
-        Add two prices together, returning a new Price
-
-        Why not modify self?
-        - Value objects should be immutable
-        - Operations return new instances
-        - Prevents unexpected side effects
-        """
-        if not isinstance(other, Price):
-            raise TypeError(f"Cannot add Price and {type(other).__name__}")
-        return Price(self.value + other.value)
+    TRADING CONCEPTS:
+    - Bid: Price buyers will pay (you SELL at this price)
+    - Ask: Price sellers want (you BUY at this price)
+    - Spread: ask - bid (market maker profit, liquidity indicator)
+    """
+    symbol: str
+    bid: Decimal
+    ask: Decimal
+    bid_size: int           # Number of shares at bid
+    ask_size: int           # Number of shares at ask
+    last_price: Decimal     # Most recent trade price
+    volume: int             # Total shares traded today
+    timestamp: datetime
+    source: PriceSource
     
-    def multiply(self, scalar: Union[int, float]) -> 'Price':
-        """
-        Multiply price by a scalar (for quantity calculations)
-
-        Union[int, float] means the parameter can be either int or float.
-        Type hints help IDEs provide better autocomplete and catch errors
-        """
-
-        return Price(self.value * Decimal(str(scalar)))
+    @property
+    def spread(self) -> Decimal:
+        """Bid-ask spread. Narrow = liquid, wide = illiquid."""
+        return self.ask - self.bid
     
-    @property  # Makes this method accessible like an attribute: price.as_float
-    def as_float(self) -> float:
-        """
-        Get price as float (for APIs that require float )
-
-        @property decorator:
-        - Makes method accessible without parentheses
-        - Read-only attribute (no setter defined)
-        - Useful for computed values
-        """
-        return float(self.value)
+    @property
+    def mid_price(self) -> Decimal:
+        """Midpoint between bid and ask. Often used as 'fair value'."""
+        return (self.bid + self.ask) / 2
     
+    @property
+    def spread_percentage(self) -> Decimal:
+        """Spread as % of mid price. More meaningful than absolute spread."""
+        if self.mid_price == 0:
+            return Decimal("0")
+        return (self.spread / self.mid_price) * 100
+    
+    def to_price(self) -> Price:
+        """Convert to simple Price (using last traded price)."""
+        return Price(
+            symbol=self.symbol,
+            price=self.last_price,
+            timestamp=self.timestamp,
+            source=self.source
+        )
+
+
+@dataclass
+class PriceHistory:
+    """
+    Collection of historical prices for a symbol.
+    
+    Note: NOT frozen because we need to add prices.
+    """
+    symbol: str
+    prices: list[Price] = field(default_factory=list)
+    max_length: int = 1000  # Prevent unbounded memory growth
+    
+    def add(self, price: Price) -> None:
+        """Add price, maintaining max length (FIFO)."""
+        if price.symbol != self.symbol:
+            raise ValueError(
+                f"Price symbol {price.symbol} doesn't match history {self.symbol}"
+            )
+        self.prices.append(price)
+        if len(self.prices) > self.max_length:
+            self.prices = self.prices[-self.max_length:]
+    
+    @property
+    def latest(self) -> Optional[Price]:
+        """Most recent price, or None if empty."""
+        return self.prices[-1] if self.prices else None
+    
+    @property
+    def price_count(self) -> int:
+        """Number of prices in history."""
+        return len(self.prices)
+    
+    def prices_since(self, since: datetime) -> list[Price]:
+        """Get all prices after a given timestamp."""
+        return [p for p in self.prices if p.timestamp > since]
