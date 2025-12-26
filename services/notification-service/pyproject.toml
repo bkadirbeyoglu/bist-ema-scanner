@@ -1,0 +1,58 @@
+[tool.poetry]
+name = "notification-service"
+version = "0.1.0"
+description = "Notification microservice for the algorithmic trading system"
+authors = ["Your Name <your.email@example.com>"]
+readme = "README.md"
+packages = [{include = "notification_service", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+# Web framework
+fastapi = "^0.109.0"
+uvicorn = {extras = ["standard"], version = "^0.27.0"}
+# AWS SDK for SNS/SQS
+aioboto3 = "^12.0.0"
+# Data validation
+pydantic = "^2.5.0"
+pydantic-settings = "^2.1.0"
+# Utilities
+python-dateutil = "^2.8.2"
+structlog = "^24.1.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-asyncio = "^0.23.0"
+pytest-cov = "^4.1.0"
+moto = {extras = ["sns", "sqs"], version = "^5.0.0"}
+httpx = "^0.26.0"
+ruff = "^0.1.0"
+mypy = "^1.8.0"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+strict = true
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

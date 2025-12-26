@@ -177,6 +177,29 @@ services:
     networks:
       - trading-network
 
+  notification-service:
+      build:
+        context: ./services/notification-service
+        dockerfile: Dockerfile
+      ports:
+        - "8003:8003"
+      environment:
+        - NOTIFICATION_SERVICE_AWS_ENDPOINT_URL=http://localstack:4566
+        - NOTIFICATION_SERVICE_AWS_REGION=us-east-1
+        - NOTIFICATION_SERVICE_LOG_LEVEL=INFO
+        - NOTIFICATION_SERVICE_CONSUMER_ENABLED=true
+        - NOTIFICATION_SERVICE_DEFAULT_RECIPIENT=trader@example.com
+      depends_on:
+        localstack:
+          condition: service_healthy
+      networks:
+        - trading-network
+      healthcheck:
+        test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+        interval: 10s
+        timeout: 5s
+        retries: 3
+
 
 networks:
   trading-network:
