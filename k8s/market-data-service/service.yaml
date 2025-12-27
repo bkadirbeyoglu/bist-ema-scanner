@@ -1,0 +1,18 @@
+# k8s/market-data-service/service.yaml
+# Stable network endpoint
+#
+# Other pods call: http://market-data-service:8001
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: market-data-service
+  namespace: trading-system
+spec:
+  type: ClusterIP  # Internal only
+  selector:
+    app: market-data-service  # Route to Pods with this label
+  ports:
+    - name: http
+      port: 8001
+      targetPort: 8001

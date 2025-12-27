@@ -1,0 +1,14 @@
+# k8s/notification-service/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: trading-system
+spec:
+  type: ClusterIP
+  selector:
+    app: notification-service
+  ports:
+    - name: http
+      port: 8003
+      targetPort: 8003

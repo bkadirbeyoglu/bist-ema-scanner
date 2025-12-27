@@ -1,0 +1,17 @@
+# k8s/namespace.yaml
+# Kubernetes Namespace: Logical boundary for our trading system
+#
+# Benefits:
+# - Resource isolation from other apps
+# - RBAC rules per namespace (control who can access what)
+# - Resource quotas (limit CPU/memory per namespace)
+# - Clean cleanup: delete namespace removes everything in it
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: trading-system
+  labels:
+    app.kubernetes.io/name: trading-system
+    app.kubernetes.io/part-of: algo-trading
+    environment: development

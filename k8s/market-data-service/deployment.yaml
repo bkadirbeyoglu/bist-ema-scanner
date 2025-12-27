@@ -1,0 +1,106 @@
+# k8s/market-data-service/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-data-service
+  namespace: trading-system
+  labels:
+    app.kubernetes.io/name: market-data-service
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: algo-trading
+spec:
+  # Replica Configuration
+  replicas: 2  # High availability: if one fails, other handles traffic
+  
+  # Selector: How the Deployment finds its Pods
+  selector:
+    matchLabels:
+      app: market-data-service
+  
+  # Update Strategy: Zero-downtime deployments
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # Can have 3 Pods during update (2 + 1)
+      maxUnavailable: 0  # Never fewer than 2 running
+  
+  # Pod Template
+  template:
+    metadata:
+      labels:
+        app: market-data-service
+        version: v1
+    spec:
+      containers:
+        - name: market-data-service
+          image: market-data-service:latest
+          imagePullPolicy: IfNotPresent  # Use local image
+          
+          ports:
+            - name: http
+              containerPort: 8001
+          
+          # Environment from ConfigMap and Secret
+          env:
+            - name: SERVICE_NAME
+              value: "market-data-service"
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: trading-config
+                  key: LOG_LEVEL
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: trading-config
+                  key: AWS_REGION
+            - name: AWS_ENDPOINT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: trading-config
+                  key: AWS_ENDPOINT_URL
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: trading-config
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                configMapKeyRef:
+                  name: trading-config
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: trading-secrets
+                  key: ALPHA_VANTAGE_API_KEY
+          
+          # Resource Limits (critical for production!)
+          resources:
+            requests:  # Minimum guaranteed
+              memory: "128Mi"
+              cpu: "100m"      # 100 millicores = 0.1 CPU
+            limits:    # Maximum allowed
+              memory: "256Mi"  # Killed (OOMKilled) if exceeded
+              cpu: "500m"      # Throttled if exceeded
+          
+          # Liveness Probe: Is the container still alive?
+          # Failed = K8s kills and restarts the container
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 10  # Wait before first check
+            periodSeconds: 15        # Check interval
+            failureThreshold: 3      # Failures before restart
+          
+          # Readiness Probe: Can the container handle traffic?
+          # Failed = Removed from Service (no traffic), NOT restarted
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      
+      terminationGracePeriodSeconds: 30  # Time to finish requests on shutdown

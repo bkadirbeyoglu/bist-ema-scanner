@@ -1,0 +1,39 @@
+# k8s/configmap.yaml
+# Non-sensitive configuration shared across services
+#
+# Note: All values must be strings (even numbers like "8001")
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trading-config
+  namespace: trading-system
+data:
+  # Logging
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"
+  
+  # AWS (LocalStack for local development)
+  # These dummy credentials are required by boto3 even for LocalStack
+  AWS_REGION: "us-east-1"
+  AWS_ENDPOINT_URL: "http://localstack:4566"
+  AWS_ACCESS_KEY_ID: "test"
+  AWS_SECRET_ACCESS_KEY: "test"
+  
+  # Service Ports
+  MARKET_DATA_SERVICE_PORT: "8001"
+  ORDER_SERVICE_PORT: "8002"
+  NOTIFICATION_SERVICE_PORT: "8003"
+  
+  # Database (password in Secret)
+  DB_HOST: "postgres"
+  DB_PORT: "5432"
+  DB_NAME: "trading"
+  
+  # Redis
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  
+  # Feature Flags
+  ENABLE_METRICS: "true"
+  ENABLE_TRACING: "false"
