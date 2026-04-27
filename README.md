@@ -12,7 +12,7 @@ A daily end-of-session scanner for Borsa İstanbul (BIST) stocks that flags EMA-
 
 ## What it does
 
-After the BIST close, run `bist_ema_scanner.py`. It walks every stock in the chosen index (XU100 by default, or XU500), fetches the last 6 months of daily candles from Yahoo Finance, computes EMA-20 and EMA-50, and prints the stocks where today's session matches a breakout pattern. Hits are appended to a CSV log, and the outcome of every past hit (return after 1, 3, 5, 10 days) is filled in automatically as more sessions pass.
+After the BIST close, run `bist_ema_scanner.py`. It walks every stock in the chosen index (XU100 by default, or XU500), fetches the last 6 months of daily candles from Yahoo Finance, computes EMA-20 and EMA-50, and prints the stocks where today's session matches one of two breakout patterns. Hits are appended to a CSV log, and the outcome of every past hit (return after 1, 3, 5, 10 days) is filled in automatically as more sessions pass.
 
 ## The signal
 
