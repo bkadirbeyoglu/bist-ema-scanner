@@ -36,23 +36,31 @@ This tool does not give buy/sell recommendations. Read the [Disclaimer](#disclai
 
 ```
 ===============================================================================================
-XU100 EMA Breakout Scan  |  Session: 2026-04-17  |  Scanned at: 2026-04-17 19:00
+XU500 EMA Breakout Scan  |  Session: 2026-04-27  |  Scanned at: 2026-04-27 18:35
 Close above both EMAs, with either yesterday's close or today's open below the upper EMA
+Marking signals with BREAK% >= 0.5% (all signals are still logged)
 ===============================================================================================
-14 match(es):  [ BRK=breakout  GDN=gap-down recovery  * = vol >= 1.5x ]
+59 match(es):  [ BRK=breakout  GDN=gap-down recovery  * = vol >= 1.5x  ✓ = BREAK% >= 0.5%  ★ = BREAK% >= 2.0% AND VOL >= 2.0x ]
 
-TICKER     DATE         TYPE   Y-CLOSE   Y-EMA20   Y-EMA50     OPEN    CLOSE   T-EMA20   T-EMA50   BREAK%    VOL×
-------------------------------------------------------------------------------------------------------------------------
-ZOREN.IS   2026-04-17   BRK       3.00      2.92      3.02     3.00     3.21      2.95      3.02   +6.15%   2.01*
-BALSU.IS   2026-04-17   BRK      15.02     14.69     15.09    15.03    15.89     14.81     15.12   +5.10%   2.64*
-EKGYO.IS   2026-04-17   BRK      20.96     20.63     21.24    20.98    22.34     20.80     21.28   +4.98%   1.69*
-PGSUS.IS   2026-04-17   BRK     186.00    183.16    187.44   186.50   196.90    184.47    187.81   +4.84%   2.27*
-VAKBN.IS   2026-04-17   BRK      33.82     33.29     33.87    33.74    35.40     33.49     33.93   +4.34%   2.78*
-HALKB.IS   2026-04-17   BRK      39.42     39.12     40.57    39.48    41.14     39.31     40.60   +1.34%   1.88*
-TAVHL.IS   2026-04-17   BRK     311.75    319.09    315.83   312.75   320.00    319.17    316.00   +0.26%   3.29*
+   TICKER     DATE         TYPE   Y-CLOSE   Y-EMA20   Y-EMA50     OPEN    CLOSE   T-EMA20   T-EMA50   BREAK%    VOL×
+--------------------------------------------------------------------------------------------------------------------------
+★ EUPWR.IS   2026-04-27   BRK      40.58     40.65     39.16    41.20    44.62     41.02     39.37   +8.76%   2.50*
+★ TATGD.IS   2026-04-27   BRK      16.55     16.70     16.35    16.55    17.57     16.79     16.40   +4.66%   2.97*
+✓ OYYAT.IS   2026-04-27   BRK      56.10     56.30     55.93    56.15    58.80     56.53     56.04   +4.01%   0.44 
+✓ KFEIN.IS   2026-04-27   BRK       8.76      8.63      8.77     8.79     9.05      8.67      8.78   +3.12%   1.59*
+✓ ADGYO.IS   2026-04-27   BRK      58.50     58.62     57.66    59.00    60.60     58.81     57.77   +3.05%   0.66 
 ...
-Logged 14 signal(s) to signals_log_xu100.csv
+  TUPRS.IS   2026-04-27   BRK     253.00    254.90    241.18   260.25   255.00    254.91    241.72   +0.04%   0.65 
+Logged 59 signal(s) to signals_log_xu500.csv
 ```
+
+Markers:
+
+- **`★`** — Strong breakout: BREAK% ≥ 2% AND volume ≥ 2× the 20-day average. Empirically the highest-conviction category.
+- **`✓`** — Above the marginal threshold (BREAK% ≥ `--min-break`, default 0.5%). Default-on; pass `-m 0` to disable.
+- (no marker) — Marginal signal. Logged but visually de-emphasised; historically these have shown the lowest follow-through.
+
+All signals — including marginal ones — are written to the log file. The markers only change how the rows are presented in the terminal, so you can experiment with different thresholds without losing data.
 
 Columns:
 
@@ -109,6 +117,8 @@ BIST closes at 18:00 Istanbul time; Yahoo's daily bar settles ~15-30 min later. 
 python bist_ema_scanner.py                    # XU100 (default)
 python bist_ema_scanner.py -i xu500           # XU500
 python bist_ema_scanner.py -d 2026-04-17      # specific historical session
+python bist_ema_scanner.py -m 1.0             # raise the ✓ threshold to 1%
+python bist_ema_scanner.py -m 0               # disable marginal-signal de-emphasis
 python bist_ema_scanner.py --no-log           # don't write to log/outcomes
 ```
 
@@ -143,9 +153,13 @@ Duplicate-protected on `(scan_date, signal_date, ticker)` — running the scanne
 
 ### `outcomes_xu*.csv`
 
-Self-updating. New signals are inserted with empty outcome cells. On subsequent runs, the scanner fills in `d1_close`, `d1_pct`, `d3_close`, `d3_pct`, … `d10_close`, `d10_pct`, plus `max_5d_close` / `max_5d_pct` (the highest close in the first 5 sessions after the signal).
+Self-updating. New signals are inserted with empty outcome cells. On subsequent runs, the scanner fills in:
 
-After a few weeks, this file is a goldmine for analysis: open it in Excel, pivot by `trigger`, by `vol_ratio` bucket, by `break_pct` quintile, and see which conditions actually predict positive subsequent returns.
+- `d{1,3,5,10}_open` / `d{1,3,5,10}_close` / `d{1,3,5,10}_pct` — the open and close on each follow-up bar, plus the close-to-close % return from `signal_close`. The `d{n}_open` columns let you measure the *real* return you'd capture if you bought at the next-day open instead of the (impossible-to-trade) signal-day close.
+- `max_5d_close` / `max_5d_pct` — the highest close in the first 5 sessions after the signal.
+- `xu100_close` / `xu100_d1_close` — the BIST 100 index close on the signal day and on d1. Lets you compute *market-relative* returns (signal d1 minus index d1) without re-fetching anything.
+
+After a few weeks, this file is a goldmine for analysis: open it in Excel, pivot by `trigger`, by `vol_ratio` bucket, by `break_pct` quintile, by gap size (`d1_open - signal_close`), or by market relative performance, and see which conditions actually predict positive subsequent returns.
 
 ## Project structure
 

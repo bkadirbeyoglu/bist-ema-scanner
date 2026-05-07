@@ -36,23 +36,31 @@ Bu araç al/sat tavsiyesi vermez. [Yasal Uyarı](#yasal-uyarı) bölümüne bak.
 
 ```
 ===============================================================================================
-XU100 EMA Breakout Scan  |  Session: 2026-04-17  |  Scanned at: 2026-04-17 19:00
+XU500 EMA Breakout Scan  |  Session: 2026-04-27  |  Scanned at: 2026-04-27 18:35
 Close above both EMAs, with either yesterday's close or today's open below the upper EMA
+Marking signals with BREAK% >= 0.5% (all signals are still logged)
 ===============================================================================================
-14 match(es):  [ BRK=breakout  GDN=gap-down recovery  * = vol >= 1.5x ]
+59 match(es):  [ BRK=breakout  GDN=gap-down recovery  * = vol >= 1.5x  ✓ = BREAK% >= 0.5%  ★ = BREAK% >= 2.0% AND VOL >= 2.0x ]
 
-TICKER     DATE         TYPE   Y-CLOSE   Y-EMA20   Y-EMA50     OPEN    CLOSE   T-EMA20   T-EMA50   BREAK%    VOL×
-------------------------------------------------------------------------------------------------------------------------
-ZOREN.IS   2026-04-17   BRK       3.00      2.92      3.02     3.00     3.21      2.95      3.02   +6.15%   2.01*
-BALSU.IS   2026-04-17   BRK      15.02     14.69     15.09    15.03    15.89     14.81     15.12   +5.10%   2.64*
-EKGYO.IS   2026-04-17   BRK      20.96     20.63     21.24    20.98    22.34     20.80     21.28   +4.98%   1.69*
-PGSUS.IS   2026-04-17   BRK     186.00    183.16    187.44   186.50   196.90    184.47    187.81   +4.84%   2.27*
-VAKBN.IS   2026-04-17   BRK      33.82     33.29     33.87    33.74    35.40     33.49     33.93   +4.34%   2.78*
-HALKB.IS   2026-04-17   BRK      39.42     39.12     40.57    39.48    41.14     39.31     40.60   +1.34%   1.88*
-TAVHL.IS   2026-04-17   BRK     311.75    319.09    315.83   312.75   320.00    319.17    316.00   +0.26%   3.29*
+   TICKER     DATE         TYPE   Y-CLOSE   Y-EMA20   Y-EMA50     OPEN    CLOSE   T-EMA20   T-EMA50   BREAK%    VOL×
+--------------------------------------------------------------------------------------------------------------------------
+★ EUPWR.IS   2026-04-27   BRK      40.58     40.65     39.16    41.20    44.62     41.02     39.37   +8.76%   2.50*
+★ TATGD.IS   2026-04-27   BRK      16.55     16.70     16.35    16.55    17.57     16.79     16.40   +4.66%   2.97*
+✓ OYYAT.IS   2026-04-27   BRK      56.10     56.30     55.93    56.15    58.80     56.53     56.04   +4.01%   0.44 
+✓ KFEIN.IS   2026-04-27   BRK       8.76      8.63      8.77     8.79     9.05      8.67      8.78   +3.12%   1.59*
+✓ ADGYO.IS   2026-04-27   BRK      58.50     58.62     57.66    59.00    60.60     58.81     57.77   +3.05%   0.66 
 ...
-Logged 14 signal(s) to signals_log_xu100.csv
+  TUPRS.IS   2026-04-27   BRK     253.00    254.90    241.18   260.25   255.00    254.91    241.72   +0.04%   0.65 
+Logged 59 signal(s) to signals_log_xu500.csv
 ```
+
+İşaretler:
+
+- **`★`** — Güçlü kırılım: BREAK% ≥ %2 VE hacim ≥ 20 günlük ortalamanın 2 katı. Ampirik olarak en yüksek güvenilirlik kategorisi.
+- **`✓`** — Marjinal eşiğin üstünde (BREAK% ≥ `--min-break`, varsayılan %0.5). Varsayılan olarak açık; `-m 0` ile devre dışı bırakılabilir.
+- (işaret yok) — Marjinal sinyal. Log'a yazılır ama görsel olarak vurgulanmaz; tarihsel olarak bu kategorinin başarı oranı düşük.
+
+Tüm sinyaller — marjinaller dahil — log dosyasına yazılır. İşaretler sadece terminaldeki gösterimi etkiler, böylece eşik üzerinde deneme yapabilirsin (veri kaybı olmadan).
 
 Sütunlar:
 
@@ -109,6 +117,8 @@ BIST 18:00'de kapanır; Yahoo'nun günlük barı 15-30 dk içinde oturur. Taray�
 python bist_ema_scanner.py                    # XU100 (varsayılan)
 python bist_ema_scanner.py -i xu500           # XU500
 python bist_ema_scanner.py -d 2026-04-17      # belirli bir geçmiş seansı tara
+python bist_ema_scanner.py -m 1.0             # ✓ eşiğini %1'e yükselt
+python bist_ema_scanner.py -m 0               # marjinal sinyal vurgusunu kapat
 python bist_ema_scanner.py --no-log           # log dosyalarına yazma
 ```
 
@@ -143,9 +153,13 @@ Sadece eklenen geçmiş kayıt dosyası. Sütunlar: `scan_date, signal_date, tic
 
 ### `outcomes_xu*.csv`
 
-Kendi kendini güncelleyen dosya. Yeni sinyaller boş outcome hücreleriyle eklenir. Sonraki çalıştırmalarda tarayıcı `d1_close`, `d1_pct`, `d3_close`, `d3_pct`, … `d10_close`, `d10_pct` ve ayrıca `max_5d_close` / `max_5d_pct` (sinyalden sonraki ilk 5 seansta görülen en yüksek kapanış) sütunlarını kendiliğinden doldurur.
+Kendi kendini güncelleyen dosya. Yeni sinyaller boş outcome hücreleriyle eklenir. Sonraki çalıştırmalarda tarayıcı şunları doldurur:
 
-Birkaç hafta sonra bu dosya analiz için altın değerinde olur: Excel'de aç, `trigger`'a göre, `vol_ratio` aralıklarına göre, `break_pct` quintile'larına göre pivot çek ve hangi koşulların gerçekten pozitif getiri öngördüğünü gör.
+- `d{1,3,5,10}_open` / `d{1,3,5,10}_close` / `d{1,3,5,10}_pct` — her takip barındaki açılış ve kapanış, ayrıca `signal_close`'a göre kapanış-kapanış yüzde getirisi. `d{n}_open` kolonları, sinyal-günü kapanışı (alıp satılamaz) yerine ertesi gün açılışında alarak elde edebileceğin **gerçek getiriyi** ölçmeye yarar.
+- `max_5d_close` / `max_5d_pct` — sinyalden sonraki ilk 5 seansta görülen en yüksek kapanış.
+- `xu100_close` / `xu100_d1_close` — sinyal günü ve d1 günü BIST 100 endeksi kapanışı. **Piyasaya göre rölatif** getiriyi (sinyal d1 - endeks d1) ek bir veri çekme yapmadan hesaplamana izin verir.
+
+Birkaç hafta sonra bu dosya analiz için altın değerinde olur: Excel'de aç, `trigger`'a göre, `vol_ratio` aralıklarına göre, `break_pct` quintile'larına göre, gap büyüklüğüne göre (`d1_open - signal_close`) ya da piyasa-rölatif performansa göre pivot çek ve hangi koşulların gerçekten pozitif getiri öngördüğünü gör.
 
 ## Proje yapısı
 
