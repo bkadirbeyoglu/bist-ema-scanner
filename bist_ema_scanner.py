@@ -70,12 +70,19 @@ SIGNAL_COLUMNS = [
 
 OUTCOME_COLUMNS = [
     "signal_date", "ticker", "trigger", "signal_close",
-    "d1_close", "d1_pct",
-    "d3_close", "d3_pct",
-    "d5_close", "d5_pct",
-    "d10_close", "d10_pct",
+    "d1_open", "d1_close", "d1_pct",
+    "d3_open", "d3_close", "d3_pct",
+    "d5_open", "d5_close", "d5_pct",
+    "d10_open", "d10_close", "d10_pct",
     "max_5d_close", "max_5d_pct",
+    # Market-relative reference: XU100 close on signal day and d1 day.
+    # Lets us compute "did this signal beat the index?" without re-fetching.
+    "xu100_close", "xu100_d1_close",
 ]
+
+# Yahoo Finance symbol for the BIST 100 index. Used as the market benchmark
+# for relative-return analysis.
+XU100_SYMBOL = "XU100.IS"
 
 
 def load_tickers(tickers_path: Path, updater_hint: str) -> list[str]:
@@ -214,26 +221,47 @@ def scan(target_date: str | None, tickers_path: Path, updater_hint: str) -> list
     return hits
 
 
-def print_results(hits: list[dict], target_date: str | None, label: str = "BIST100"):
+def print_results(hits: list[dict], target_date: str | None, label: str = "BIST100",
+                  min_break: float = 0.0):
+    # Threshold for the ★ "strong breakout" marker. Empirically, this combo
+    # has shown a higher win rate than other signals in our outcomes data.
+    STRONG_BREAK_PCT = 2.0
+    STRONG_VOL_RATIO = 2.0
+
     header_date = target_date or datetime.now().strftime("%Y-%m-%d")
     print("=" * 95)
     print(f"{label} EMA Breakout Scan  |  Session: {header_date}  |  Scanned at: {datetime.now():%Y-%m-%d %H:%M}")
     print("Close above both EMAs, with either yesterday's close or today's open below the upper EMA")
+    if min_break > 0:
+        print(f"Marking signals with BREAK% >= {min_break}% (all signals are still logged)")
     print("=" * 95)
 
     if not hits:
         print("No matches.")
         return
 
-    print(f"{len(hits)} match(es):  [ BRK=breakout  GDN=gap-down recovery  * = vol >= 1.5x ]\n")
-    print(f"{'TICKER':<10} {'DATE':<12} {'TYPE':<5} "
+    legend_parts = ["BRK=breakout", "GDN=gap-down recovery", "* = vol >= 1.5x"]
+    if min_break > 0:
+        legend_parts.append(f"✓ = BREAK% >= {min_break}%")
+    legend_parts.append(f"★ = BREAK% >= {STRONG_BREAK_PCT}% AND VOL >= {STRONG_VOL_RATIO}x")
+    print(f"{len(hits)} match(es):  [ {'  '.join(legend_parts)} ]\n")
+
+    # Header — leading marker column is 2 chars wide
+    print(f"{'':<2} {'TICKER':<10} {'DATE':<12} {'TYPE':<5} "
           f"{'Y-CLOSE':>8} {'Y-EMA20':>9} {'Y-EMA50':>9}  "
           f"{'OPEN':>7} {'CLOSE':>8} {'T-EMA20':>9} {'T-EMA50':>9} {'BREAK%':>8} {'VOL×':>7}")
-    print("-" * 120)
+    print("-" * 122)
     for h in sorted(hits, key=lambda x: -x["break_pct"]):
         vol_marker = "*" if h["vol_ratio"] >= 1.5 else " "
         vol_str = f"{h['vol_ratio']:.2f}{vol_marker}" if h["vol_ratio"] > 0 else "  n/a "
-        print(f"{h['ticker']:<10} {h['date']:<12} {h['trigger']:<5} "
+        # Pick the strongest applicable marker. ★ takes priority over ✓.
+        if h["break_pct"] >= STRONG_BREAK_PCT and h["vol_ratio"] >= STRONG_VOL_RATIO:
+            marker = "★ "
+        elif min_break > 0 and h["break_pct"] >= min_break:
+            marker = "✓ "
+        else:
+            marker = "  "
+        print(f"{marker}{h['ticker']:<10} {h['date']:<12} {h['trigger']:<5} "
               f"{h['y_close']:>8.2f} {h['y_ema20']:>9.2f} {h['y_ema50']:>9.2f}  "
               f"{h['open']:>7.2f} {h['close']:>8.2f} {h['t_ema20']:>9.2f} {h['t_ema50']:>9.2f} "
               f"{h['break_pct']:>+7.2f}% {vol_str:>7}")
@@ -310,21 +338,66 @@ def update_outcomes(new_hits: list[dict], outcomes_path: Path):
                ("signal_date", "ticker", "trigger", "signal_close")},
         })
 
-    # Step 3: for each row with unfilled outcomes, try to fill them from yfinance
+    # Step 3: pre-fetch the XU100 index series once. We'll use it to fill
+    # the market-relative reference columns (xu100_close, xu100_d1_close).
+    # On any given run, today's freshly-added signals get xu100_close right
+    # away, and yesterday's signals get their xu100_d1_close.
+    xu100_df = None
+    if rows:
+        try:
+            xu100_df = yf.download(XU100_SYMBOL, period="6mo", interval="1d",
+                                   progress=False, auto_adjust=True, threads=False)
+            if isinstance(xu100_df.columns, pd.MultiIndex):
+                xu100_df.columns = xu100_df.columns.get_level_values(0)
+        except Exception as e:
+            print(f"Warning: could not fetch {XU100_SYMBOL} ({e}); "
+                  f"market-relative columns will be left blank.", file=sys.stderr)
+            xu100_df = None
+
+    def fill_xu100_for_row(r: dict, signal_date) -> bool:
+        """Fill xu100_close and xu100_d1_close for a row if missing. Returns True if changed."""
+        if xu100_df is None or xu100_df.empty:
+            return False
+        changed = False
+        # xu100_close on the signal day itself
+        if r.get("xu100_close") in ("", None):
+            same_day = xu100_df[xu100_df.index.date == signal_date]
+            if not same_day.empty:
+                r["xu100_close"] = round(float(same_day.iloc[0]["Close"]), 4)
+                changed = True
+        # xu100_d1_close on the next trading day
+        if r.get("xu100_d1_close") in ("", None):
+            after_idx = xu100_df[xu100_df.index.date > signal_date]
+            if not after_idx.empty:
+                r["xu100_d1_close"] = round(float(after_idx.iloc[0]["Close"]), 4)
+                changed = True
+        return changed
+
+    # Step 4: for each row, try to fill outcome columns from yfinance
     today = datetime.now().date()
     updated_count = 0
     price_cache: dict[str, pd.DataFrame] = {}  # one fetch per ticker per run
 
     for r in rows:
-        # Skip rows where all outcome cells are filled already
-        if all(r.get(c) not in ("", None) for c in
-               ("d1_pct", "d3_pct", "d5_pct", "d10_pct", "max_5d_pct")):
-            continue
-
+        # Parse the signal date once — we need it for both XU100 columns and outcome calc
         try:
             signal_date = datetime.strptime(r["signal_date"], "%Y-%m-%d").date()
         except ValueError:
             continue
+
+        # XU100 columns: signal-day value goes in immediately on insert;
+        # the d1 value gets filled on the NEXT day's run.
+        if fill_xu100_for_row(r, signal_date):
+            updated_count += 1
+
+        # Skip rows where every outcome column is already filled. Include
+        # the d{n}_open columns in this check — otherwise a row from before
+        # we started capturing opens would be skipped here forever.
+        if all(r.get(c) not in ("", None) for c in
+               ("d1_pct", "d3_pct", "d5_pct", "d10_pct", "max_5d_pct",
+                "d1_open", "d3_open", "d5_open", "d10_open")):
+            continue
+
         days_elapsed = (today - signal_date).days
         if days_elapsed < 1:
             continue  # no outcome yet, not even one day later
@@ -354,8 +427,17 @@ def update_outcomes(new_hits: list[dict], outcomes_path: Path):
 
         changed = False
         for n, label in [(1, "d1"), (3, "d3"), (5, "d5"), (10, "d10")]:
-            if r.get(f"{label}_pct") in ("", None) and len(after) >= n:
-                close_n = float(after.iloc[n - 1]["Close"])
+            if len(after) < n:
+                continue
+            bar = after.iloc[n - 1]
+            # Fill d{n}_open if missing (independent of pct/close — covers
+            # back-fill for rows logged before opens were tracked)
+            if r.get(f"{label}_open") in ("", None):
+                r[f"{label}_open"] = round(float(bar["Open"]), 4)
+                changed = True
+            # Fill d{n}_close + d{n}_pct if pct is missing
+            if r.get(f"{label}_pct") in ("", None):
+                close_n = float(bar["Close"])
                 r[f"{label}_close"] = round(close_n, 4)
                 r[f"{label}_pct"] = round((close_n - signal_close) / signal_close * 100, 4)
                 changed = True
@@ -389,13 +471,21 @@ def main():
     p.add_argument("-i", "--index", choices=list(DATASETS.keys()), default="xu100",
                    help="Which BIST index to scan. Default: xu100. "
                         "Each index has its own log/outcome files.")
+    p.add_argument("-m", "--min-break", type=float, default=0.5,
+                   help="Minimum BREAK%% threshold for marking signals as non-marginal "
+                        "(default: 0.5). Signals at or above this %% get a marker in the "
+                        "output. All signals are still logged. Set to 0 to disable.")
     p.add_argument("--no-log", action="store_true", help="Skip writing to log/outcomes CSVs")
     args = p.parse_args()
 
     dataset = DATASETS[args.index]
 
     hits = scan(args.date, dataset["tickers"], dataset["updater"])
-    print_results(hits, args.date, dataset["label"])
+
+    # All signals are written to logs. The min-break threshold only changes
+    # the visual marker in the terminal output (>= threshold gets a marker)
+    # so we can A/B-evaluate threshold choices on real data later.
+    print_results(hits, args.date, dataset["label"], args.min_break)
 
     if not args.no_log:
         append_signals_log(hits, dataset["signals"])
