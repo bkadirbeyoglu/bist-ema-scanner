@@ -1,5 +1,5 @@
 """
-BIST EMA Breakout Scanner (v1.1)
+BIST EMA Breakout Scanner (v1.8)
 --------------------------------
 Scans BIST stocks for an EMA breakout pattern. Fires when today's close
 is above both EMA20 and EMA50, AND at least one of:
@@ -15,6 +15,84 @@ The relative order of EMA20 and EMA50 doesn't matter.
 
 Two index datasets are supported: XU100 (default) and XU500. Each has its
 own ticker list + log/outcome files so analyses stay distinct.
+
+v1.2 changes:
+    - Outcome days (d1..d10) are now anchored to explicit BIST trading
+      dates via bist_calendar.next_trading_day(), not to "the next row
+      yfinance returned". This fixes a class of bugs where a holiday
+      gap (e.g. Kurban Bayramı) could cause d1 to land on a closed day
+      and silently inherit signal-day values as a placeholder.
+    - Corrupt placeholder rows (d1_open == signal_close AND d1_high/low
+      == 0) are detected on each update_outcomes pass, cleared, and
+      re-fetched from yfinance.
+    - Requires bist_calendar.py + bist_holidays.txt next to this file.
+
+v1.3 changes:
+    - Second corruption pattern caught: when d2..d_k_pct are all exactly
+      equal to d1_pct (consequence of yfinance forward-filling closed
+      holiday days and the pre-v1.2 positional reader treating those
+      duplicate bars as legitimate d2..d_k). Those cells are now
+      detected, cleared, and refetched. Also clears max_5d/min_5d for
+      affected rows since they were computed over a corrupt window.
+
+v1.4 changes:
+    - Chain corruption detector generalized. Earlier versions only
+      caught runs anchored at d1. v1.4 catches any run of 3+ identical
+      consecutive d_n_pct values — including the "d3..d5 == d2" pattern
+      that shows up when the holiday gap falls between d2 and d3 of an
+      older signal (e.g. May 22 Friday signals whose d3 should be the
+      post-bayram session). The first occurrence in the run is kept as
+      the genuine value; duplicates from that point are cleared and
+      refetched against BIST calendar dates.
+
+v1.5 changes:
+    - Future-date guard in the per-day fill loop: if d_n's calendar
+      date is after today, stop. Prevents yfinance from poisoning
+      outcome cells with placeholder bars for sessions that haven't
+      happened yet.
+    - Stale-bar guard: rejects any bar with zero volume AND zero
+      intraday range (high == low). These are forward-fill artifacts
+      yfinance has been observed to return; trusting them would refill
+      cells that v1.4's detector just cleared.
+    - Generalized zero-movement placeholder check now applies to d2..d5
+      (not just d1), so the older corrupt fingerprint of pct=high=low=0
+      is cleaned out wherever it appears.
+
+v1.6 changes:
+    - Two new derived columns: signal_close_in_range and
+      d1_close_in_range. Both are [0, 1] positions of a day's close
+      within its intraday range:
+          (close - low) / (high - low)
+      Empty when high == low (limit-locked, no range).
+      signal_close_in_range is signal-time information (entry filter).
+      d1_close_in_range is post-entry (hold/exit signal). The d1
+      version is the one validated by analysis: monotonic d5 edge
+      across quintiles with a +5.61pp spread.
+    - scan() now captures signal-day high/low so the new outcome row
+      can store signal_close_in_range at seed time.
+    - update_outcomes() backfills both columns for existing rows:
+      signal_close_in_range from the price cache, d1_close_in_range
+      from the already-stored d1_high_pct / d1_low_pct / d1_pct.
+
+v1.7 changes:
+    - New split_suspect flag column. Set to "T" when |d1_high_pct| or
+      |d1_low_pct| exceeds 30%, the fingerprint of a yfinance auto-adjust
+      scale shift between when signal_close was captured and when d1
+      OHLC was fetched (i.e., the underlying stock split or had a major
+      corporate action). Affected rows have inconsistent scales across
+      their own columns and should be excluded from analysis.
+    - d1_close_in_range backfill now clamps results to [0, 1]; values
+      that would fall outside that range (the scale-mismatch fingerprint)
+      stay empty instead of being written as nonsense numbers.
+
+v1.8 changes:
+    - split_suspect detection broadened. v1.7 used a single threshold
+      (|d1_high_pct| or |d1_low_pct| > 30%) and caught only the most
+      extreme cases. v1.8 adds a sharper test: d1_pct must lie within
+      [d1_low_pct, d1_high_pct] — close can't be outside the day's
+      high/low range. The two tests run together; either firing marks
+      the row T and clears d1_close_in_range (which would have been
+      meaningless on inconsistent inputs).
 
 Refresh ticker lists with:
     python update_index.py -i xu100
@@ -38,6 +116,13 @@ from datetime import datetime
 from pathlib import Path
 import pandas as pd
 import yfinance as yf
+
+from bist_calendar import (
+    load_holidays,
+    next_trading_day,
+    nth_trading_day_after,
+    trading_days_between,
+)
 
 HERE = Path(__file__).resolve().parent
 STALE_DAYS = 100  # BIST 100 rebalances quarterly — warn if CSV is older than this
@@ -66,23 +151,92 @@ SIGNAL_COLUMNS = [
     "y_close", "y_ema20", "y_ema50",
     "open", "close", "t_ema20", "t_ema50",
     "break_pct", "vol_ratio",
+    # Day of week of the signal_date (Mon/Tue/...) — useful for spotting
+    # weekday effects without re-parsing the date in every analysis.
+    "day_of_week",
+    # Spread between EMA-20 and EMA-50 on the signal day, as a % of EMA-50:
+    #   (t_ema20 - t_ema50) / t_ema50 * 100
+    # Positive  -> EMA-20 above EMA-50 (post-golden-cross / uptrend stack)
+    # Negative  -> EMA-20 below EMA-50 (pre-golden-cross / downtrend stack)
+    # The magnitude shows how far apart the averages are. This is known at
+    # signal time, so it can serve as an entry filter (unlike post-signal
+    # golden-cross timing, which is circular).
+    "ema_gap_pct",
 ]
 
 OUTCOME_COLUMNS = [
     "signal_date", "ticker", "trigger", "signal_close",
+    # Where the signal-day close sat within the signal-day intraday range:
+    #   (signal_close - signal_low) / (signal_high - signal_low)
+    # Range [0, 1]: 0 = closed at the day's low (weak), 1 = closed at the
+    # day's high (strong). Empty when high == low (limit-locked / no range).
+    # This is signal-time information — usable as an entry filter.
+    "signal_close_in_range",
+    # Daily outcomes for the 10 trading days after the signal.
+    # Only d1 keeps open + close: d1_open is needed for gap analysis (you
+    # enter at the next open, not the signal close). Every other day carries
+    # just _pct — the close-to-close return vs signal_close — which is enough
+    # to reconstruct the full day-by-day path. d_n close prices, if ever
+    # needed, are signal_close * (1 + d_n_pct / 100).
     "d1_open", "d1_close", "d1_pct",
-    "d3_open", "d3_close", "d3_pct",
-    "d5_open", "d5_close", "d5_pct",
-    "d10_open", "d10_close", "d10_pct",
+    # Where d1's close sat within d1's intraday range (same formula as
+    # signal_close_in_range, applied to the d1 bar). Hold/exit signal —
+    # known after d1's close. A "toxic close" (low position in range
+    # after pushing above signal close) is associated with continued
+    # underperformance through d5.
+    "d1_close_in_range",
+    "d2_pct", "d3_pct", "d4_pct", "d5_pct",
+    "d6_pct", "d7_pct", "d8_pct", "d9_pct", "d10_pct",
+    # High / low for the first 5 days after the signal. Together with the
+    # derivable open/close, these give full OHLC for d1-d5 — enough for
+    # candlestick analysis and intraday-range questions. Stored as % moves
+    # vs signal_close, same basis as the _pct columns.
+    "d1_high_pct", "d1_low_pct",
+    "d2_high_pct", "d2_low_pct",
+    "d3_high_pct", "d3_low_pct",
+    "d4_high_pct", "d4_low_pct",
+    "d5_high_pct", "d5_low_pct",
+    # Volume ratio for the first 5 days after the signal: each day's volume
+    # divided by the 20-day average volume BEFORE the signal (a fixed base,
+    # the same pre-signal normal used for the signal-day vol_ratio). Lets us
+    # see whether post-breakout advances are confirmed by volume or drifting
+    # on thin trade.
+    "d1_vol_ratio", "d2_vol_ratio", "d3_vol_ratio",
+    "d4_vol_ratio", "d5_vol_ratio",
+    # Best close over the first 5 trading days after the signal — the upside
+    # the position offered to a short-term trader aiming to take profit.
     "max_5d_close", "max_5d_pct",
-    # Market-relative reference: XU100 close on signal day and d1 day.
-    # Lets us compute "did this signal beat the index?" without re-fetching.
-    "xu100_close", "xu100_d1_close",
+    # Worst close over the first 5 trading days — the drawdown a trader would
+    # have sat through before any peak. max_5d shows the opportunity; min_5d
+    # shows the pain along the way.
+    "min_5d_close", "min_5d_pct",
+    # Market-relative reference: XU100 open and close on signal day and d1 day.
+    # The opens let us see XU100's own intraday direction; the closes give
+    # close-to-close moves. Together they let us compute "did this signal
+    # beat the index?" without re-fetching.
+    "xu100_open", "xu100_close", "xu100_d1_open", "xu100_d1_close",
+    # at_limit = "T" if d1_pct hit the BIST daily price limit (±10%), else "F".
+    # Used to mark clamped outcomes that aren't free-market prices.
+    "at_limit",
+    # split_suspect = "T" if the row's d1 data appears scale-inconsistent
+    # with signal_close (likely a stock split between signal_date and the
+    # outcome update). Flagged when |d1_high_pct| > 30 or |d1_low_pct| > 30
+    # — normal BIST intraday moves cannot reach that magnitude; values that
+    # large signal a yfinance auto-adjust scale change that signal_close
+    # didn't follow. Excluded from clean analysis; left in the file for
+    # later manual handling.
+    "split_suspect",
 ]
 
 # Yahoo Finance symbol for the BIST 100 index. Used as the market benchmark
 # for relative-return analysis.
 XU100_SYMBOL = "XU100.IS"
+
+# BIST daily price-move limit. Closes within LIMIT_TOLERANCE of ±LIMIT_PCT
+# are flagged as at_limit — the price would likely have moved further if
+# the exchange permitted it.
+LIMIT_PCT = 10.0
+LIMIT_TOLERANCE = 0.05  # so 9.95% counts as 'at limit'
 
 
 def load_tickers(tickers_path: Path, updater_hint: str) -> list[str]:
@@ -210,6 +364,12 @@ def scan(target_date: str | None, tickers_path: Path, updater_hint: str) -> list
                     "y_ema50": float(yesterday["EMA50"]),
                     "open": float(today["Open"]),
                     "close": close,
+                    # high/low captured here even though they're not in
+                    # SIGNAL_COLUMNS — they're used to seed the new outcome
+                    # row's signal_close_in_range. Storing them on the hit
+                    # avoids a second yfinance round-trip for the same bar.
+                    "high": float(today["High"]),
+                    "low": float(today["Low"]),
                     "t_ema20": float(today["EMA20"]),
                     "t_ema50": float(today["EMA50"]),
                     "break_pct": (close - t_upper) / t_upper * 100,
@@ -267,6 +427,46 @@ def print_results(hits: list[dict], target_date: str | None, label: str = "BIST1
               f"{h['break_pct']:>+7.2f}% {vol_str:>7}")
 
 
+def _weekday_name(date_str: str) -> str:
+    """Return short English weekday name for an ISO date string."""
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d")
+        return ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][d.weekday()]
+    except ValueError:
+        return ""
+
+
+def _migrate_log_schema(log_path: Path, expected_columns: list[str]):
+    """If log_path's columns don't match expected_columns, rewrite the file
+    with the new schema. Adds missing columns (empty for old rows) and drops
+    any columns no longer in the schema.
+
+    Idempotent: if the file already matches expected_columns exactly, does
+    nothing.
+    """
+    if not log_path.exists():
+        return
+    with log_path.open(encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        existing_cols = list(reader.fieldnames or [])
+        rows = list(reader)
+    missing = [c for c in expected_columns if c not in existing_cols]
+    extra = [c for c in existing_cols if c not in expected_columns]
+    if not missing and not extra:
+        return
+    if missing:
+        print(f"Migrating {log_path.name}: adding columns {missing}")
+    if extra:
+        print(f"Migrating {log_path.name}: dropping columns {extra}")
+    with log_path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=expected_columns)
+        w.writeheader()
+        for row in rows:
+            # Keep only the expected columns; missing cells become empty.
+            new_row = {c: row.get(c, "") for c in expected_columns}
+            w.writerow(new_row)
+
+
 def append_signals_log(hits: list[dict], signals_path: Path):
     """Append today's signals to the given signals CSV (never overwrites).
     Skips rows that match an existing (scan_date, signal_date, ticker)
@@ -274,6 +474,9 @@ def append_signals_log(hits: list[dict], signals_path: Path):
     if not hits:
         return
     scan_date = datetime.now().strftime("%Y-%m-%d")
+
+    # Migrate to current schema if columns are missing (idempotent)
+    _migrate_log_schema(signals_path, SIGNAL_COLUMNS)
 
     # Load existing keys to avoid duplicates
     existing_keys: set[tuple[str, str, str]] = set()
@@ -294,6 +497,9 @@ def append_signals_log(hits: list[dict], signals_path: Path):
         if not file_exists:
             w.writeheader()
         for h in new_rows:
+            # EMA-20/EMA-50 spread as % of EMA-50. Guard against a zero EMA-50.
+            t_ema50 = h["t_ema50"]
+            ema_gap = ((h["t_ema20"] - t_ema50) / t_ema50 * 100) if t_ema50 else 0.0
             w.writerow({
                 "scan_date": scan_date,
                 "signal_date": h["date"],
@@ -308,6 +514,8 @@ def append_signals_log(hits: list[dict], signals_path: Path):
                 "t_ema50": round(h["t_ema50"], 4),
                 "break_pct": round(h["break_pct"], 4),
                 "vol_ratio": round(h["vol_ratio"], 4),
+                "day_of_week": _weekday_name(h["date"]),
+                "ema_gap_pct": round(ema_gap, 4),
             })
     print(f"Logged {len(new_rows)} signal(s) to {signals_path.name}")
 
@@ -317,6 +525,9 @@ def update_outcomes(new_hits: list[dict], outcomes_path: Path):
     Add new signals as rows (with blank outcome cells), then fill in
     outcome columns for any existing rows that now have enough data.
     """
+    # Migrate to current schema if columns are missing (idempotent)
+    _migrate_log_schema(outcomes_path, OUTCOME_COLUMNS)
+
     # Step 1: load existing rows (if any)
     rows: list[dict] = []
     if outcomes_path.exists():
@@ -329,13 +540,19 @@ def update_outcomes(new_hits: list[dict], outcomes_path: Path):
         key = (h["date"], h["ticker"])
         if key in existing_keys:
             continue
+        # Compute signal_close_in_range from the signal-day OHLC. Empty
+        # when the bar has no intraday range (high == low, e.g. limit-locked).
+        sig_rng = h["high"] - h["low"]
+        sig_cir = round((h["close"] - h["low"]) / sig_rng, 4) if sig_rng > 0 else ""
         rows.append({
             "signal_date": h["date"],
             "ticker": h["ticker"],
             "trigger": h["trigger"],
             "signal_close": round(h["close"], 4),
+            "signal_close_in_range": sig_cir,
             **{col: "" for col in OUTCOME_COLUMNS if col not in
-               ("signal_date", "ticker", "trigger", "signal_close")},
+               ("signal_date", "ticker", "trigger",
+                "signal_close", "signal_close_in_range")},
         })
 
     # Step 3: pre-fetch the XU100 index series once. We'll use it to fill
@@ -355,28 +572,155 @@ def update_outcomes(new_hits: list[dict], outcomes_path: Path):
             xu100_df = None
 
     def fill_xu100_for_row(r: dict, signal_date) -> bool:
-        """Fill xu100_close and xu100_d1_close for a row if missing. Returns True if changed."""
+        """Fill XU100 open/close for signal day and d1 day if missing.
+        Returns True if any cell changed.
+
+        d1 is anchored to the next BIST trading day via the calendar
+        helper — NOT to 'whatever index row yfinance returned next'.
+        That distinction matters across bayram gaps where yfinance might
+        otherwise hand back a stale signal-day bar."""
         if xu100_df is None or xu100_df.empty:
             return False
         changed = False
-        # xu100_close on the signal day itself
-        if r.get("xu100_close") in ("", None):
-            same_day = xu100_df[xu100_df.index.date == signal_date]
-            if not same_day.empty:
-                r["xu100_close"] = round(float(same_day.iloc[0]["Close"]), 4)
+        # Signal day
+        same_day = xu100_df[xu100_df.index.date == signal_date]
+        if not same_day.empty:
+            bar = same_day.iloc[0]
+            if r.get("xu100_open") in ("", None):
+                r["xu100_open"] = round(float(bar["Open"]), 4)
                 changed = True
-        # xu100_d1_close on the next trading day
-        if r.get("xu100_d1_close") in ("", None):
-            after_idx = xu100_df[xu100_df.index.date > signal_date]
-            if not after_idx.empty:
-                r["xu100_d1_close"] = round(float(after_idx.iloc[0]["Close"]), 4)
+            if r.get("xu100_close") in ("", None):
+                r["xu100_close"] = round(float(bar["Close"]), 4)
+                changed = True
+        # d1 = next BIST trading day per the calendar
+        d1_date = next_trading_day(signal_date, holidays)
+        d1_match = xu100_df[xu100_df.index.date == d1_date]
+        if not d1_match.empty:
+            bar = d1_match.iloc[0]
+            if r.get("xu100_d1_open") in ("", None):
+                r["xu100_d1_open"] = round(float(bar["Open"]), 4)
+                changed = True
+            if r.get("xu100_d1_close") in ("", None):
+                r["xu100_d1_close"] = round(float(bar["Close"]), 4)
                 changed = True
         return changed
 
-    # Step 4: for each row, try to fill outcome columns from yfinance
+    # Step 4: for each row, try to fill outcome columns from yfinance.
+    # BIST holidays are loaded once and shared across the loop + the
+    # XU100 reference filler defined above.
     today = datetime.now().date()
+    holidays = load_holidays()
     updated_count = 0
+    corrupt_count = 0
+    chain_corrupt_count = 0
     price_cache: dict[str, pd.DataFrame] = {}  # one fetch per ticker per run
+
+    # Outcome cells that participate in the corrupt-placeholder pattern.
+    # When d1 has been filled but every visible cell is exactly signal_close
+    # (open == close == signal_close, high == low == 0%), the data is fake —
+    # almost certainly the symptom of a pre-v1.2 run that crossed a holiday
+    # gap and grabbed the signal-day bar instead of d1. Wipe and re-fetch.
+    _PLACEHOLDER_CELLS = (
+        "d1_open", "d1_close", "d1_pct",
+        "d1_high_pct", "d1_low_pct", "d1_vol_ratio",
+    )
+
+    def _is_placeholder_d1(r: dict) -> bool:
+        """Detect the corrupt 'd1 == signal day' fingerprint."""
+        try:
+            sc = float(r["signal_close"])
+            cells = [r.get(k) for k in
+                     ("d1_open", "d1_close", "d1_pct",
+                      "d1_high_pct", "d1_low_pct")]
+            if any(c in ("", None) for c in cells):
+                return False
+            d1o, d1c, d1p, d1h, d1l = (float(c) for c in cells)
+            # All five tell the same fake story: signal_close as both d1
+            # open and close, with zero pct/high/low. Real-world chance of
+            # this is effectively nil — flag and clear.
+            return (
+                abs(d1o - sc) < 1e-6
+                and abs(d1c - sc) < 1e-6
+                and abs(d1p) < 1e-6
+                and abs(d1h) < 1e-6
+                and abs(d1l) < 1e-6
+            )
+        except (ValueError, TypeError, KeyError):
+            return False
+
+    def _zero_movement_dn(r: dict, n: int) -> bool:
+        """Detect zero-movement placeholder for any d_n where 1 <= n <= 5.
+
+        Symptom: d_n_pct == 0 AND d_n_high_pct == 0 AND d_n_low_pct == 0,
+        with d_n_vol_ratio either 0 or missing. A real trading day has
+        non-zero intraday range; this exact-zero fingerprint is the
+        signature of yfinance returning a placeholder bar for a date
+        that doesn't exist (e.g. future dates, holidays without the
+        calendar correctly excluding them)."""
+        if not (1 <= n <= 5):
+            return False
+        try:
+            pct = r.get(f"d{n}_pct")
+            high = r.get(f"d{n}_high_pct")
+            low = r.get(f"d{n}_low_pct")
+            if pct in ("", None) or high in ("", None) or low in ("", None):
+                return False
+            return (
+                abs(float(pct)) < 1e-6
+                and abs(float(high)) < 1e-6
+                and abs(float(low)) < 1e-6
+            )
+        except (ValueError, TypeError):
+            return False
+
+    def _detect_corrupt_dn_chain(r: dict) -> int:
+        """Detect any run of 3+ consecutive identical d_n_pct values —
+        the fingerprint of yfinance forward-filling closed-market days
+        (bayram, weekends) into the price history.
+
+        v1.4 generalization: catches both
+          - 'd2 == d1 chain' (May 25 cohort post-bayram pattern), and
+          - 'd_n == d_{n-1} chain' starting at any index ≥ 2 (May 22
+            cohort pattern, where d3..d5 ended up equal to d2).
+
+        Returns the smallest n that's part of an identical run of length
+        ≥ 3, indicating the SECOND occurrence in the run (so the FIRST
+        occurrence — presumably the real value — is preserved). Returns
+        0 if no corruption.
+
+        Concretely:
+          d1=9.96, d2=9.96, d3=9.96, d4=9.96, d5=20.93  → returns 2
+          d1=-0.94, d2=-1.58, d3=-1.58, d4=-1.58, d5=-1.58  → returns 3
+
+        The 4-decimal precision of stored percentages makes a chance
+        run of 3 identical values astronomically unlikely outside a
+        bug — exact matches are not a realistic noise pattern."""
+        # Pull a tight list of (n, pct) pairs up to the first empty
+        try:
+            vals: list[tuple[int, float]] = []
+            for n in range(1, 11):
+                v = r.get(f"d{n}_pct")
+                if v in ("", None):
+                    break
+                vals.append((n, float(v)))
+            if len(vals) < 3:
+                return 0  # need at least 3 entries to detect a run of 3
+
+            # Walk forward, looking for the start of a duplicate run
+            for i in range(1, len(vals)):
+                if abs(vals[i][1] - vals[i - 1][1]) > 1e-6:
+                    continue
+                # Found a duplicate at i; measure the full run length
+                run_end = i
+                while (run_end + 1 < len(vals)
+                       and abs(vals[run_end + 1][1] - vals[i][1]) < 1e-6):
+                    run_end += 1
+                run_length = run_end - (i - 1) + 1  # incl. the anchor at i-1
+                if run_length >= 3:
+                    return vals[i][0]  # clear from the FIRST duplicate
+            return 0
+        except (ValueError, TypeError):
+            return 0
 
     for r in rows:
         # Parse the signal date once — we need it for both XU100 columns and outcome calc
@@ -386,26 +730,85 @@ def update_outcomes(new_hits: list[dict], outcomes_path: Path):
             continue
 
         # XU100 columns: signal-day value goes in immediately on insert;
-        # the d1 value gets filled on the NEXT day's run.
+        # the d1 value gets filled on the NEXT trading day's run.
         if fill_xu100_for_row(r, signal_date):
             updated_count += 1
 
-        # Skip rows where every outcome column is already filled. Include
-        # the d{n}_open columns in this check — otherwise a row from before
-        # we started capturing opens would be skipped here forever.
+        # Corrupt-placeholder detection: clear d1 cells if they match the
+        # fingerprint left by the holiday-gap bug. Subsequent code will re-fetch.
+        if _is_placeholder_d1(r):
+            corrupt_count += 1
+            for cell in _PLACEHOLDER_CELLS:
+                r[cell] = ""
+
+        # Corrupt d_n chain detection: when d2..d_k are exact copies of d1
+        # (pre-v1.2 yfinance-duplicate-bar artifact), clear them from d_k
+        # onward. The next per-day loop will refill them correctly using
+        # the BIST trading calendar.
+        first_bad = _detect_corrupt_dn_chain(r)
+        if first_bad:
+            chain_corrupt_count += 1
+            for n in range(first_bad, 11):
+                for suffix in ("_pct", "_high_pct", "_low_pct", "_vol_ratio"):
+                    cell = f"d{n}{suffix}"
+                    if cell in r:
+                        r[cell] = ""
+            # max/min over 5d are now untrustworthy too — they were computed
+            # over a window containing duplicate bars. Clear and recompute.
+            for cell in ("max_5d_close", "max_5d_pct",
+                         "min_5d_close", "min_5d_pct"):
+                if cell in r:
+                    r[cell] = ""
+
+        # Generalized zero-movement placeholder check for d2..d5. Same
+        # zero-pct + zero-high + zero-low fingerprint as the d1 detector
+        # above, but applied to any later day. Catches the case where
+        # yfinance returned a fake placeholder bar for a future date
+        # (e.g. an outcome being filled for d2 = tomorrow when "tomorrow"
+        # hasn't traded yet) and the per-day loop trusted it.
+        for n in range(2, 6):
+            if _zero_movement_dn(r, n):
+                chain_corrupt_count += 1
+                for suffix in ("_pct", "_high_pct", "_low_pct", "_vol_ratio"):
+                    cell = f"d{n}{suffix}"
+                    if cell in r:
+                        r[cell] = ""
+                # Also wipe later days; if d_n is a placeholder, later
+                # days computed from this row's price cache are suspect.
+                for m in range(n + 1, 11):
+                    for suffix in ("_pct", "_high_pct", "_low_pct", "_vol_ratio"):
+                        cell = f"d{m}{suffix}"
+                        if cell in r:
+                            r[cell] = ""
+                for cell in ("max_5d_close", "max_5d_pct",
+                             "min_5d_close", "min_5d_pct"):
+                    if cell in r:
+                        r[cell] = ""
+                break  # one detection is enough; the cascade clears the rest
+
+        # Skip rows where every outcome column is already filled.
         if all(r.get(c) not in ("", None) for c in
-               ("d1_pct", "d3_pct", "d5_pct", "d10_pct", "max_5d_pct",
-                "d1_open", "d3_open", "d5_open", "d10_open")):
+               ("d1_pct", "d2_pct", "d3_pct", "d4_pct", "d5_pct", "d6_pct",
+                "d7_pct", "d8_pct", "d9_pct", "d10_pct",
+                "d1_high_pct", "d5_high_pct", "d1_vol_ratio", "d5_vol_ratio",
+                "max_5d_pct", "min_5d_pct", "d1_open",
+                "signal_close_in_range", "d1_close_in_range",
+                "xu100_open", "xu100_close", "xu100_d1_open", "xu100_d1_close",
+                "at_limit", "split_suspect")):
             continue
 
-        days_elapsed = (today - signal_date).days
-        if days_elapsed < 1:
-            continue  # no outcome yet, not even one day later
+        # Trading-day check using the BIST calendar — bayram and weekends
+        # don't count. If zero trading days have passed since the signal,
+        # there's no d1 yet and yfinance has nothing useful for us.
+        if trading_days_between(signal_date, today, holidays) < 1:
+            continue
 
         ticker = r["ticker"]
         if ticker not in price_cache:
-            # Fetch ~3 weeks after signal to cover d10 with weekends/holidays
-            df = yf.download(ticker, period="2mo", interval="1d",
+            # Fetch 3 months: enough to cover the 20-day pre-signal volume
+            # window AND the 10-day post-signal outcome window, with room
+            # for weekends/holidays even for the oldest signals in the log.
+            df = yf.download(ticker, period="3mo", interval="1d",
                              progress=False, auto_adjust=True, threads=False)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
@@ -415,43 +818,226 @@ def update_outcomes(new_hits: list[dict], outcomes_path: Path):
         if df is None or df.empty:
             continue
 
-        # Find rows AFTER signal_date
-        after = df[df.index.date > signal_date]
-        if after.empty:
-            continue
-
         try:
             signal_close = float(r["signal_close"])
         except (ValueError, TypeError):
             continue
 
+        # Pre-signal 20-day average volume — the fixed base for post-signal
+        # volume ratios. Uses bars strictly before the signal day, so it's
+        # the same "pre-breakout normal" the signal-day vol_ratio used.
+        before = df[df.index.date < signal_date]
+        pre_vol_avg = 0.0
+        if len(before) >= 1:
+            pre_vol_avg = float(before["Volume"].tail(20).mean())
+
         changed = False
-        for n, label in [(1, "d1"), (3, "d3"), (5, "d5"), (10, "d10")]:
-            if len(after) < n:
-                continue
-            bar = after.iloc[n - 1]
-            # Fill d{n}_open if missing (independent of pct/close — covers
-            # back-fill for rows logged before opens were tracked)
-            if r.get(f"{label}_open") in ("", None):
-                r[f"{label}_open"] = round(float(bar["Open"]), 4)
+
+        # Backfill signal_close_in_range for rows seeded before this column
+        # existed. The signal-day bar is in the price cache; compute from
+        # its OHLC directly. Empty stays empty if the bar isn't found or has
+        # no intraday range (limit-locked).
+        if r.get("signal_close_in_range") in ("", None):
+            sig_bar = df[df.index.date == signal_date]
+            if not sig_bar.empty:
+                try:
+                    s_h = float(sig_bar.iloc[0]["High"])
+                    s_l = float(sig_bar.iloc[0]["Low"])
+                    s_c = float(sig_bar.iloc[0]["Close"])
+                    rng = s_h - s_l
+                    if rng > 0:
+                        r["signal_close_in_range"] = round((s_c - s_l) / rng, 4)
+                        changed = True
+                except (ValueError, TypeError, KeyError):
+                    pass
+
+        # Backfill d1_close_in_range from existing d1_high_pct / d1_low_pct
+        # / d1_pct when present but the new column is empty. No fetch
+        # needed — derived purely from data we already have.
+        if (r.get("d1_close_in_range") in ("", None)
+                and r.get("d1_high_pct") not in ("", None)
+                and r.get("d1_low_pct") not in ("", None)
+                and r.get("d1_pct") not in ("", None)):
+            try:
+                hp = float(r["d1_high_pct"])
+                lp = float(r["d1_low_pct"])
+                pp = float(r["d1_pct"])
+                rng = hp - lp
+                if rng > 0:
+                    cir = (pp - lp) / rng
+                    # Sanity clamp: values outside [0, 1] mean d1_pct fell
+                    # outside d1's reported high/low range — a scale
+                    # inconsistency (split-affected row). Leave the cell
+                    # empty rather than store a meaningless number; the
+                    # split_suspect flag below also catches this case.
+                    if 0 <= cir <= 1:
+                        r["d1_close_in_range"] = round(cir, 4)
+                        changed = True
+            except (ValueError, TypeError):
+                pass
+
+        # Split-suspect detection: catches scale mismatches between
+        # signal_close and the d1 OHLC fields. Two complementary signals:
+        #   (a) |d1_high_pct| > 30 or |d1_low_pct| > 30 — BIST daily
+        #       limits are ±10% (±20% on a few special bands), so a 30%+
+        #       move is impossible under normal trading.
+        #   (b) d1_pct falls outside [d1_low_pct, d1_high_pct] — close
+        #       can't be lower than the low or higher than the high; if
+        #       it is, the close was recorded under one price scale and
+        #       the high/low under another (yfinance auto-adjust shift).
+        # (b) is the sharper test — it catches modest scale shifts that
+        # (a) would miss.
+        if r.get("split_suspect") in ("", None):
+            try:
+                hp = r.get("d1_high_pct")
+                lp = r.get("d1_low_pct")
+                pp = r.get("d1_pct")
+                if all(v not in ("", None) for v in (hp, lp, pp)):
+                    hp_f, lp_f, pp_f = float(hp), float(lp), float(pp)
+                    big_move = abs(hp_f) > 30 or abs(lp_f) > 30
+                    out_of_range = pp_f < lp_f - 1e-6 or pp_f > hp_f + 1e-6
+                    if big_move or out_of_range:
+                        r["split_suspect"] = "T"
+                        # Also wipe d1_close_in_range — the value computed
+                        # from inconsistent inputs is meaningless.
+                        r["d1_close_in_range"] = ""
+                        changed = True
+                    else:
+                        r["split_suspect"] = "F"
+                        changed = True
+            except (ValueError, TypeError):
+                pass
+
+        # Resolve d1..d10 to explicit BIST trading dates. Each d_n is then
+        # looked up by *exact date* — not by "the n-th row yfinance happened
+        # to return". This is the v1.2 fix for the holiday-gap bug.
+        dn_dates = [
+            nth_trading_day_after(signal_date, n, holidays) for n in range(1, 11)
+        ]
+
+        d1_to_d5_closes: list[float] = []  # collect for max_5d/min_5d below
+
+        for n, dn_date in enumerate(dn_dates, 1):
+            # Future-date guard: refuse to fill cells for sessions that
+            # haven't happened yet. yfinance has been observed to return
+            # placeholder/forward-fill bars for dates beyond the latest
+            # trading day; trusting those scribbles fake data into the
+            # outcome columns.
+            if dn_date > today:
+                break
+
+            bar_match = df[df.index.date == dn_date]
+            if bar_match.empty:
+                # Data for this d_n isn't available yet (the session hasn't
+                # closed, or yfinance hasn't caught up). Stop here; we'd
+                # rather leave subsequent days empty than scribble guesses.
+                break
+
+            bar = bar_match.iloc[0]
+
+            # Stale-bar guard: a bar with literally zero volume AND
+            # high == low is almost certainly a forward-fill artifact
+            # for a closed market (a stock that genuinely traded would
+            # have *some* volume and at least 1-tick of intraday range).
+            # Skip and break — subsequent days from this cache are suspect.
+            try:
+                bar_volume = float(bar["Volume"])
+                bar_high = float(bar["High"])
+                bar_low = float(bar["Low"])
+                is_fake_bar = (
+                    bar_volume <= 0
+                    and abs(bar_high - bar_low) < 1e-9
+                )
+                if is_fake_bar:
+                    break
+            except (ValueError, TypeError, KeyError):
+                pass  # if we can't read those fields, fall through to fill
+
+            close_n = float(bar["Close"])
+            pct_n = round((close_n - signal_close) / signal_close * 100, 4)
+            label = f"d{n}"
+
+            if n == 1:
+                # d1 is "rich": open + close + pct. open and pct are filled
+                # independently — either may already exist without the other
+                # (e.g. open captured before pct landed).
+                if r.get("d1_open") in ("", None):
+                    r["d1_open"] = round(float(bar["Open"]), 4)
+                    changed = True
+                if r.get("d1_pct") in ("", None):
+                    r["d1_close"] = round(close_n, 4)
+                    r["d1_pct"] = pct_n
+                    changed = True
+                # d1_close_in_range: where the close sat within d1's range
+                # [0, 1]. Computed from the raw bar (cleaner than going via
+                # the percent-of-signal_close columns and avoiding a divide
+                # by zero on limit-locked days where high == low).
+                if r.get("d1_close_in_range") in ("", None):
+                    try:
+                        h_n = float(bar["High"])
+                        l_n = float(bar["Low"])
+                        rng = h_n - l_n
+                        if rng > 0:
+                            r["d1_close_in_range"] = round((close_n - l_n) / rng, 4)
+                            changed = True
+                    except (ValueError, TypeError, KeyError):
+                        pass
+            else:
+                if r.get(f"{label}_pct") in ("", None):
+                    r[f"{label}_pct"] = pct_n
+                    changed = True
+
+            # d1-d5: high/low as % vs signal_close, and volume ratio
+            if n <= 5:
+                d1_to_d5_closes.append(close_n)
+                if r.get(f"{label}_high_pct") in ("", None):
+                    high_n = float(bar["High"])
+                    low_n = float(bar["Low"])
+                    r[f"{label}_high_pct"] = round((high_n - signal_close) / signal_close * 100, 4)
+                    r[f"{label}_low_pct"] = round((low_n - signal_close) / signal_close * 100, 4)
+                    changed = True
+                if r.get(f"{label}_vol_ratio") in ("", None) and pre_vol_avg > 0:
+                    vol_n = float(bar["Volume"])
+                    r[f"{label}_vol_ratio"] = round(vol_n / pre_vol_avg, 4)
+                    changed = True
+
+        # max/min across the first 5 trading days — only when we got the
+        # full window, to avoid biased best/worst from partial data.
+        if len(d1_to_d5_closes) == 5:
+            if r.get("max_5d_pct") in ("", None):
+                max_close = max(d1_to_d5_closes)
+                r["max_5d_close"] = round(max_close, 4)
+                r["max_5d_pct"] = round((max_close - signal_close) / signal_close * 100, 4)
                 changed = True
-            # Fill d{n}_close + d{n}_pct if pct is missing
-            if r.get(f"{label}_pct") in ("", None):
-                close_n = float(bar["Close"])
-                r[f"{label}_close"] = round(close_n, 4)
-                r[f"{label}_pct"] = round((close_n - signal_close) / signal_close * 100, 4)
+            if r.get("min_5d_pct") in ("", None):
+                min_close = min(d1_to_d5_closes)
+                r["min_5d_close"] = round(min_close, 4)
+                r["min_5d_pct"] = round((min_close - signal_close) / signal_close * 100, 4)
                 changed = True
 
-        # max over the first 5 bars after signal
-        if r.get("max_5d_pct") in ("", None) and len(after) >= 5:
-            window = after.iloc[:5]
-            max_close = float(window["Close"].max())
-            r["max_5d_close"] = round(max_close, 4)
-            r["max_5d_pct"] = round((max_close - signal_close) / signal_close * 100, 4)
-            changed = True
+        # at_limit: T if d1_pct hit (or essentially hit) the daily price limit.
+        # Filled whenever d1_pct is known and at_limit isn't.
+        # We mark T only when |d1_pct| is within a small band around LIMIT_PCT —
+        # values far beyond (like -78%) are corporate-action artifacts, not
+        # limit hits, and stay F.
+        if r.get("at_limit") in ("", None) and r.get("d1_pct") not in ("", None):
+            try:
+                d1_abs = abs(float(r["d1_pct"]))
+                hit = (LIMIT_PCT - LIMIT_TOLERANCE) <= d1_abs <= (LIMIT_PCT + LIMIT_TOLERANCE)
+                r["at_limit"] = "T" if hit else "F"
+                changed = True
+            except (ValueError, TypeError):
+                pass
 
         if changed:
             updated_count += 1
+
+    if corrupt_count:
+        print(f"Detected and cleared {corrupt_count} corrupt placeholder "
+              f"d1 row(s); they will be re-fetched on this run.")
+    if chain_corrupt_count:
+        print(f"Detected and cleared d_n chain corruption on {chain_corrupt_count} "
+              f"row(s) (d2..d_k were duplicates of d1 from forward-filled holiday bars).")
 
     # Step 4: write everything back
     with outcomes_path.open("w", newline="", encoding="utf-8") as f:

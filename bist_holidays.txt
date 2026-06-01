@@ -1,0 +1,22 @@
+# BIST resmi tatilleri ve yarım seans günleri
+# Format: YYYY-MM-DD [TAB] tip [TAB] açıklama
+# tip: closed | half_day
+
+# 2026
+2026-01-01  closed     Yılbaşı
+2026-03-19  half_day   Ramazan Bayramı Arifesi (yarım gün)
+2026-03-20  closed     Ramazan Bayramı 1. Gün
+2026-04-23  closed     Ulusal Egemenlik ve Çocuk Bayramı
+2026-05-01  closed     Emek ve Dayanışma Günü
+2026-05-19  closed     Atatürk'ü Anma, Gençlik ve Spor Bayramı
+2026-05-26  half_day   Kurban Bayramı Arifesi (yarım gün)
+2026-05-27  closed     Kurban Bayramı 1. Gün
+2026-05-28  closed     Kurban Bayramı 2. Gün
+2026-05-29  closed     Kurban Bayramı 3. Gün
+2026-07-15  closed     Demokrasi ve Milli Birlik Günü
+2026-08-30  closed     Zafer Bayramı
+2026-10-28  half_day   Cumhuriyet Bayramı Arifesi
+2026-10-29  closed     Cumhuriyet Bayramı
+
+# 2027 — ileriye dönük olarak eklersen rahat edersin
+2027-01-01  closed     Yılbaşı

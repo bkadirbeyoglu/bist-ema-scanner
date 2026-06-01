@@ -12,7 +12,7 @@ A daily end-of-session scanner for Borsa İstanbul (BIST) stocks that flags EMA-
 
 ## What it does
 
-After the BIST close, run `bist_ema_scanner.py`. It walks every stock in the chosen index (XU100 by default, or XU500), fetches the last 6 months of daily candles from Yahoo Finance, computes EMA-20 and EMA-50, and prints the stocks where today's session matches one of two breakout patterns. Hits are appended to a CSV log, and the outcome of every past hit (return after 1, 3, 5, 10 days) is filled in automatically as more sessions pass.
+After the BIST close, run `bist_ema_scanner.py`. It walks every stock in the chosen index (XU100 by default, or XU500), fetches the last 6 months of daily candles from Yahoo Finance, computes EMA-20 and EMA-50, and prints the stocks where today's session matches one of two breakout patterns. Hits are appended to a CSV log, and the outcome of every past hit (1-10 day follow-up returns, intraday range, volume continuity, market-relative performance) is filled in automatically as more sessions pass.
 
 ## The signal
 
@@ -95,6 +95,21 @@ pandas
 requests
 ```
 
+### Trading calendar setup
+
+The scanner uses an explicit BIST trading calendar to correctly skip weekends and Turkish public holidays when computing outcome dates (d1..d10). Two files are required:
+
+- **`bist_calendar.py`** — calendar helper module (no setup needed; imported by the scanner).
+- **`bist_holidays.txt`** — manually maintained list of closed and half-day sessions. Format: one entry per line, `YYYY-MM-DD <closed|half_day> # optional comment`. Update this once a year when the official BIST calendar publishes.
+
+Verify the calendar with:
+
+```bash
+python bist_calendar.py 2026-05-26
+# Expected output includes the date's trading-day status, half-day flag,
+# next trading day (bayram/weekend-aware), and the d1..d5 sequence.
+```
+
 ## Usage
 
 The workflow is two steps: refresh the ticker list (occasionally), then run the scanner (daily after market close).
@@ -111,7 +126,7 @@ python update_index.py -i xu500 -s midas  # use Midas as fallback if KAP is down
 
 ### 2. Run the scanner
 
-BIST closes at 18:00 Istanbul time; Yahoo's daily bar settles ~15-30 min later.  Run the scanner around 18:30:
+BIST closes at 18:00 Istanbul time; Yahoo's daily bar settles ~15-30 min later. Run the scanner around 18:30:
 
 ```bash
 python bist_ema_scanner.py                    # XU100 (default)
@@ -121,6 +136,8 @@ python bist_ema_scanner.py -m 1.0             # raise the ✓ threshold to 1%
 python bist_ema_scanner.py -m 0               # disable marginal-signal de-emphasis
 python bist_ema_scanner.py --no-log           # don't write to log/outcomes
 ```
+
+Each run also updates outcomes for all older signals — older rows get their d_n columns filled as new sessions become available.
 
 ### 3. Inspect a single ticker
 
@@ -141,13 +158,22 @@ xu500.csv
 signals_log_xu100.csv      ← every signal ever fired
 signals_log_xu500.csv
 
-outcomes_xu100.csv         ← what happened d+1, d+3, d+5, d+10 after each signal
+outcomes_xu100.csv         ← post-signal d1..d10 returns + intraday + market-rel
 outcomes_xu500.csv
 ```
 
 ### `signals_log_xu*.csv`
 
-Append-only history. Columns: `scan_date, signal_date, ticker, trigger, y_close, y_ema20, y_ema50, open, close, t_ema20, t_ema50, break_pct, vol_ratio`.
+Append-only history. Columns:
+
+| Column | Meaning |
+|--------|---------|
+| `scan_date`, `signal_date`, `ticker`, `trigger` | When the scan ran, the session date, ticker, BRK/GDN |
+| `y_close`, `y_ema20`, `y_ema50` | Yesterday's close and EMA values |
+| `open`, `close`, `t_ema20`, `t_ema50` | Today's open/close and EMA values |
+| `break_pct`, `vol_ratio` | Distance above upper EMA; today's volume vs 20-day average |
+| `day_of_week` | Day name (Mon/Tue/…) for easy weekday analysis |
+| `ema_gap_pct` | EMA20-EMA50 spread as % of EMA50; sign indicates trend stack |
 
 Duplicate-protected on `(scan_date, signal_date, ticker)` — running the scanner multiple times the same day is safe.
 
@@ -155,23 +181,86 @@ Duplicate-protected on `(scan_date, signal_date, ticker)` — running the scanne
 
 Self-updating. New signals are inserted with empty outcome cells. On subsequent runs, the scanner fills in:
 
-- `d{1,3,5,10}_open` / `d{1,3,5,10}_close` / `d{1,3,5,10}_pct` — the open and close on each follow-up bar, plus the close-to-close % return from `signal_close`. The `d{n}_open` columns let you measure the *real* return you'd capture if you bought at the next-day open instead of the (impossible-to-trade) signal-day close.
-- `max_5d_close` / `max_5d_pct` — the highest close in the first 5 sessions after the signal.
-- `xu100_close` / `xu100_d1_close` — the BIST 100 index close on the signal day and on d1. Lets you compute *market-relative* returns (signal d1 minus index d1) without re-fetching anything.
+**Daily returns (d1..d10).** Close-to-close percentage return vs `signal_close` for each of the first 10 trading days after the signal. `d1` is additionally stored with full open and close prices so the *real* return you'd capture buying at the next-day open can be measured.
 
-After a few weeks, this file is a goldmine for analysis: open it in Excel, pivot by `trigger`, by `vol_ratio` bucket, by `break_pct` quintile, by gap size (`d1_open - signal_close`), or by market relative performance, and see which conditions actually predict positive subsequent returns.
+**Intraday range (d1..d5).** `d_n_high_pct` and `d_n_low_pct` give the high and low of each day as a percentage of `signal_close`. Together with the daily close, full OHLC for the first 5 sessions can be reconstructed.
+
+**Volume continuity (d1..d5).** `d_n_vol_ratio` is each day's volume divided by the 20-day pre-signal average. The same base volume the signal-day `vol_ratio` used, so post-signal trade can be compared apples-to-apples.
+
+**5-day extremes.** `max_5d_close` / `max_5d_pct` — best close in the 5-session window. `min_5d_close` / `min_5d_pct` — worst close, showing the drawdown a trader would have sat through.
+
+**Close-in-range positions.** `signal_close_in_range` and `d1_close_in_range` — where each day's close sat within its intraday range, on a [0, 1] scale. 0 = closed at the day's low (weak), 1 = closed at the day's high (strong). Empty when the bar has no intraday range (limit-locked). The d1 version is a hold/exit signal known after the next day's close; the signal version is entry-time information.
+
+**Market-relative reference.** `xu100_open`, `xu100_close`, `xu100_d1_open`, `xu100_d1_close` — BIST 100 index values on the signal day and the next trading day. Lets you compute the signal's market-relative return without re-fetching the index.
+
+**Status flags.** `at_limit` — "T" if d1 hit the BIST ±10% price limit. `split_suspect` — "T" when d1 OHLC shows a scale inconsistency with `signal_close` (the fingerprint of a stock split between signal time and the outcome update). Split-suspect rows should be excluded from analysis: `df[df['split_suspect'] != 'T']`.
+
+After a few weeks, this file is a goldmine for analysis: open it in Excel or pandas, pivot by `trigger`, by `vol_ratio` bucket, by `break_pct` quintile, by gap size (`d1_open - signal_close`), by `close_in_range` position, by `day_of_week`, or by market-relative performance, and see which conditions actually predict positive subsequent returns.
+
+## Data quality and robustness
+
+The scanner self-heals from several yfinance data quirks that can otherwise corrupt the outcomes log silently:
+
+- **Holiday-gap d1 placeholder** — when `signal_date == today` and a holiday gap intervenes, yfinance can return a fake d1 bar with `open == close == signal_close` and zero high/low. Detected and cleared on subsequent runs.
+- **Forward-fill duplicate chains** — yfinance sometimes returns duplicate bars for closed market days (bayram, weekends if not stripped). Without calendar awareness, these get stored as legitimate d2, d3, … values. The scanner detects runs of 3+ identical consecutive `d_n_pct` values and clears them.
+- **Future-date placeholder** — yfinance can return placeholder bars for dates that haven't traded yet. A future-date guard in the per-day fill loop prevents these from being written.
+- **Stale forward-fill bars** — bars with zero volume AND zero intraday range are forward-fill artifacts; rejected during refill.
+- **Split scale mismatch** — when a stock splits between signal_date and a later outcome update, `signal_close` (captured at signal time) and d1 OHLC (re-fetched as adjusted) end up in different scales. Flagged via `split_suspect = "T"` and excluded from analysis filters.
+
+## Companion tools
+
+Optional scripts that produce data adjacent to the main scanner. Each has its own log file and can be run independently.
+
+### `morning_snapshot.py` — intraday early-read
+
+Captures the first ~50 minutes of trading for the previous session's signals. Useful for testing whether gap-up direction and first-hour volume confirm the next-day outcome before the close. Output: `morning_snapshots_xu*.csv`.
+
+Run shortly after market open (around 10:50 Istanbul time):
+
+```bash
+python morning_snapshot.py            # XU100
+python morning_snapshot.py -i xu500   # XU500
+```
+
+### `bist_signal_followup.py` — quick stats on latest signals
+
+Prints day-1 outcomes for the most recent signal date, sorted by performance, with a market-relative summary. No log file; pure display tool.
+
+```bash
+python bist_signal_followup.py            # XU100
+python bist_signal_followup.py -i xu500   # XU500
+```
+
+### `bist_mean_reversion_scanner.py` — alternate strategy
+
+A second scanner that flags significant deviations of close from EMA20/EMA50 (above or below). Has its own log structure and tracks 5-day outcomes via `mr_outcomes_xu*.csv`. Useful for cross-validating signals against a mean-reversion lens rather than a breakout lens.
+
+```bash
+python bist_mean_reversion_scanner.py            # XU100
+python bist_mean_reversion_scanner.py -i xu500   # XU500
+```
 
 ## Project structure
 
 ```
 bist-ema-scanner/
-├── bist_ema_scanner.py         # Main scanner
-├── update_index.py         # Ticker list refresher (KAP + Midas fallback)
-├── debug_ticker.py         # Single-ticker diagnostic
-├── xu100.csv               # Ticker lists (generated)
+├── bist_ema_scanner.py             # Main scanner
+├── bist_calendar.py                # BIST trading-day calendar helper
+├── bist_holidays.txt               # Manually maintained holiday list
+├── update_index.py                 # Ticker list refresher (KAP + Midas fallback)
+├── debug_ticker.py                 # Single-ticker diagnostic
+│
+├── morning_snapshot.py             # Intraday early-read (companion)
+├── bist_signal_followup.py         # Latest-signal quick stats (companion)
+├── bist_mean_reversion_scanner.py  # Mean-reversion scanner (companion)
+│
+├── xu100.csv                       # Ticker lists (generated)
 ├── xu500.csv
-├── signals_log_xu*.csv     # Signal history (generated)
-├── outcomes_xu*.csv        # Outcome tracking (generated)
+├── signals_log_xu*.csv             # Signal history (generated)
+├── outcomes_xu*.csv                # Outcome tracking (generated)
+├── morning_snapshots_xu*.csv       # Intraday snapshots (generated)
+├── mr_outcomes_xu*.csv             # Mean-reversion outcomes (generated)
+│
 ├── requirements.txt
 ├── LICENSE
 ├── README.md
@@ -182,17 +271,19 @@ bist-ema-scanner/
 
 - **Ticker lists:** [KAP (Public Disclosure Platform)](https://kap.org.tr/tr/Endeksler) — primary. [Midas](https://www.getmidas.com/canli-borsa/) — fallback.
 - **Price history:** [Yahoo Finance](https://finance.yahoo.com/) via the `yfinance` library, with `auto_adjust=True` so EMAs are computed on dividend- and split-adjusted closes.
+- **Trading calendar:** maintained manually in `bist_holidays.txt`.
 
 ## Limitations and known issues
 
 - **Yahoo data lag:** ~15-30 minutes after BIST close. Don't run the scanner before 18:30 Istanbul time, or today's bar will be missing.
-- **Adjusted prices:** Yahoo's adjustment isn't always perfect for Turkish stocks that do bonus issues (`bedelsiz sermaye artırımı`). Spot-check signals against your broker's chart if a number looks off.
+- **Adjusted prices and splits:** When a stock splits between when a signal was recorded and a later outcome update, `signal_close` and d1 OHLC end up scaled differently. The scanner detects this and sets `split_suspect = "T"`; downstream analysis should filter these out.
 - **Delisted tickers:** A stock removed from BIST will print a "possibly delisted" warning from yfinance. Re-run `update_index.py` after a quarterly rebalance to refresh.
-- **Not a buy/sell recommendation.** The signal has roughly coin-flip accuracy on its own (typical for crossover strategies). Real edge comes from combining it with position sizing, stop-losses, and market-regime filters — none of which this tool implements.
+- **Holiday calendar maintenance:** `bist_holidays.txt` must be updated annually when the official BIST calendar is published; otherwise outcomes around new holidays will silently fall back to forward-filled bars.
+- **Not a buy/sell recommendation.** The base signal has roughly coin-flip accuracy on its own (typical for crossover strategies). Real edge comes from combining it with filters (gap direction, intraday close position, volume continuity, market regime, signal sequence) and discipline around position sizing and stops — none of which this tool implements.
 
 ## Contributing
 
-Issues and pull requests welcome. If you propose a strategy change (e.g. a new trigger type), please include a quick analysis of how it performs against historical `outcomes_xu*.csv` data.
+Issues and pull requests welcome. If you propose a strategy change (e.g. a new trigger type or a new outcome column), please include a quick analysis of how it performs against historical `outcomes_xu*.csv` data, and a falsifiable hypothesis statement (a pre-specified threshold the result should beat).
 
 ## Disclaimer
 

@@ -12,7 +12,7 @@ Borsa İstanbul (BIST) hisselerini her seans sonu tarayan, EMA-20 / EMA-50 kır�
 
 ## Ne yapar
 
-BIST kapanışından sonra `bist_ema_scanner.py`'yi çalıştırırsın. Seçtiğin endeksteki (varsayılan XU100, alternatif XU500) her hisse için Yahoo Finance'tan son 6 ayın günlük mumlarını çeker, EMA-20 ve EMA-50'yi hesaplar, ve bugünkü kapanışı iki kırılım örüntüsünden birine uyan hisseleri ekrana basar. Bulunan sinyaller bir CSV'ye eklenir; geçmişteki her sinyalin sonraki 1, 3, 5 ve 10 günlük getirisi de yeni günler geçtikçe otomatik olarak doldurulur.
+BIST kapanışından sonra `bist_ema_scanner.py`'yi çalıştırırsın. Seçtiğin endeksteki (varsayılan XU100, alternatif XU500) her hisse için Yahoo Finance'tan son 6 ayın günlük mumlarını çeker, EMA-20 ve EMA-50'yi hesaplar, ve bugünkü kapanışı iki kırılım örüntüsünden birine uyan hisseleri ekrana basar. Bulunan sinyaller bir CSV'ye eklenir; geçmişteki her sinyalin sonraki 1-10 günlük getirisi, gün-içi range bilgisi, hacim sürekliliği ve piyasaya göre rölatif performansı da yeni günler geçtikçe otomatik olarak doldurulur.
 
 ## Sinyal tanımı
 
@@ -95,6 +95,21 @@ pandas
 requests
 ```
 
+### İşlem takvimi kurulumu
+
+Tarayıcı, sinyal sonrası takip günlerini (d1..d10) hesaplarken hafta sonları ve resmi tatil günlerini doğru şekilde atlamak için açık bir BIST işlem takvimi kullanır. İki dosya gerekir:
+
+- **`bist_calendar.py`** — takvim yardımcı modülü (kurulum gerektirmez; tarayıcı tarafından import edilir).
+- **`bist_holidays.txt`** — kapalı ve yarım gün seanslarının manuel olarak tutulan listesi. Format: her satırda bir kayıt, `YYYY-MM-DD <closed|half_day> # opsiyonel yorum`. Resmî BIST takvimi yayımlandığında yılda bir güncelle.
+
+Takvimi şu komutla doğrula:
+
+```bash
+python bist_calendar.py 2026-05-26
+# Beklenen çıktı: tarihin işlem-günü statüsü, yarım gün bayrağı,
+# bir sonraki işlem günü (bayram/hafta sonu duyarlı) ve d1..d5 dizisi.
+```
+
 ## Kullanım
 
 İki adımlı bir akış: hisse listesini ara sıra yenile, sonra tarayıcıyı her gün seans kapanışından sonra çalıştır.
@@ -122,6 +137,8 @@ python bist_ema_scanner.py -m 0               # marjinal sinyal vurgusunu kapat
 python bist_ema_scanner.py --no-log           # log dosyalarına yazma
 ```
 
+Her çalıştırma aynı zamanda eski sinyallerin outcome verilerini de günceller — yeni seanslar geçtikçe eski satırların d_n kolonları otomatik dolar.
+
 ### 3. Tek bir hisseyi incele
 
 Belirli bir hissenin niye sinyal verdiğini ya da niye vermediğini anlamak için:
@@ -141,13 +158,22 @@ xu500.csv
 signals_log_xu100.csv      ← şimdiye kadarki tüm sinyaller
 signals_log_xu500.csv
 
-outcomes_xu100.csv         ← her sinyalin 1, 3, 5, 10 gün sonra ne olduğu
+outcomes_xu100.csv         ← sinyal sonrası d1..d10 getirileri + gün-içi + piyasaya rölatif
 outcomes_xu500.csv
 ```
 
 ### `signals_log_xu*.csv`
 
-Sadece eklenen geçmiş kayıt dosyası. Sütunlar: `scan_date, signal_date, ticker, trigger, y_close, y_ema20, y_ema50, open, close, t_ema20, t_ema50, break_pct, vol_ratio`.
+Sadece eklenen geçmiş kayıt dosyası. Sütunlar:
+
+| Sütun | Anlamı |
+|-------|--------|
+| `scan_date`, `signal_date`, `ticker`, `trigger` | Taramanın çalıştığı tarih, seans tarihi, ticker, BRK/GDN |
+| `y_close`, `y_ema20`, `y_ema50` | Dünkü kapanış ve EMA değerleri |
+| `open`, `close`, `t_ema20`, `t_ema50` | Bugünkü açılış/kapanış ve EMA değerleri |
+| `break_pct`, `vol_ratio` | Üst EMA üstündeki yüzde mesafe; bugünkü hacim / 20 günlük ortalama |
+| `day_of_week` | Gün adı (Mon/Tue/…) — haftalık etki analizi için |
+| `ema_gap_pct` | EMA20-EMA50 farkı, EMA50'nin % olarak; işareti trend istifini gösterir |
 
 `(scan_date, signal_date, ticker)` üçlüsüne göre mükerrer kayıt korumalı — aynı gün tarayıcıyı kaç kez çalıştırırsan çalıştır sorun olmaz.
 
@@ -155,23 +181,86 @@ Sadece eklenen geçmiş kayıt dosyası. Sütunlar: `scan_date, signal_date, tic
 
 Kendi kendini güncelleyen dosya. Yeni sinyaller boş outcome hücreleriyle eklenir. Sonraki çalıştırmalarda tarayıcı şunları doldurur:
 
-- `d{1,3,5,10}_open` / `d{1,3,5,10}_close` / `d{1,3,5,10}_pct` — her takip barındaki açılış ve kapanış, ayrıca `signal_close`'a göre kapanış-kapanış yüzde getirisi. `d{n}_open` kolonları, sinyal-günü kapanışı (alıp satılamaz) yerine ertesi gün açılışında alarak elde edebileceğin **gerçek getiriyi** ölçmeye yarar.
-- `max_5d_close` / `max_5d_pct` — sinyalden sonraki ilk 5 seansta görülen en yüksek kapanış.
-- `xu100_close` / `xu100_d1_close` — sinyal günü ve d1 günü BIST 100 endeksi kapanışı. **Piyasaya göre rölatif** getiriyi (sinyal d1 - endeks d1) ek bir veri çekme yapmadan hesaplamana izin verir.
+**Günlük getiriler (d1..d10).** Sinyal sonrası ilk 10 işlem günü için `signal_close`'a göre kapanış-kapanış yüzde getiri. `d1` ek olarak tam açılış ve kapanış fiyatlarıyla saklanır; böylece ertesi gün açılışında alarak elde edebileceğin **gerçek getiri** ölçülebilir.
 
-Birkaç hafta sonra bu dosya analiz için altın değerinde olur: Excel'de aç, `trigger`'a göre, `vol_ratio` aralıklarına göre, `break_pct` quintile'larına göre, gap büyüklüğüne göre (`d1_open - signal_close`) ya da piyasa-rölatif performansa göre pivot çek ve hangi koşulların gerçekten pozitif getiri öngördüğünü gör.
+**Gün-içi range (d1..d5).** `d_n_high_pct` ve `d_n_low_pct` her günün tepe ve tabanını `signal_close`'a göre yüzde olarak verir. Günlük kapanışla birlikte ilk 5 seansın tam OHLC'si yeniden inşa edilebilir.
+
+**Hacim sürekliliği (d1..d5).** `d_n_vol_ratio` her günün hacmi / sinyal-öncesi 20 günün ortalama hacmi. Sinyal-günü `vol_ratio` ile aynı taban kullanıldığı için sinyal sonrası hacim akışı **elma-elma** karşılaştırılabilir.
+
+**5 günlük uç değerler.** `max_5d_close` / `max_5d_pct` — 5 seans içindeki en yüksek kapanış. `min_5d_close` / `min_5d_pct` — en düşük kapanış; tüccarın oturarak kaldığı drawdown.
+
+**Range içi kapanış pozisyonu.** `signal_close_in_range` ve `d1_close_in_range` — her günün kapanışının gün-içi range içinde nerede olduğu, [0, 1] ölçeğinde. 0 = günün tabanında kapanış (zayıf), 1 = günün tepesinde kapanış (güçlü). Mum range'i yoksa boş (limit-locked). d1 versiyonu ertesi gün kapanışında bilinen bir hold/exit sinyali; sinyal versiyonu giriş anında bilgi.
+
+**Piyasaya rölatif referans.** `xu100_open`, `xu100_close`, `xu100_d1_open`, `xu100_d1_close` — sinyal günü ve ertesi işlem günü BIST 100 endeksi değerleri. Sinyalin piyasaya rölatif getirisini ek bir veri çekme yapmadan hesaplamana izin verir.
+
+**Durum bayrakları.** `at_limit` — d1 BIST ±%10 fiyat limitine takıldıysa "T". `split_suspect` — d1 OHLC ile `signal_close` arasında ölçek tutarsızlığı varsa "T" (sinyal anı ile outcome güncellemesi arasında hissede bölünme olduğunun parmak izi). Split-suspect satırlar analizlerde dışlanmalı: `df[df['split_suspect'] != 'T']`.
+
+Birkaç hafta sonra bu dosya analiz için altın değerinde olur: Excel veya pandas'ta aç, `trigger`'a göre, `vol_ratio` aralıklarına göre, `break_pct` quintile'larına göre, gap büyüklüğüne göre (`d1_open - signal_close`), `close_in_range` pozisyonuna göre, `day_of_week`'e göre veya piyasa-rölatif performansa göre pivot çek ve hangi koşulların gerçekten pozitif getiri öngördüğünü gör.
+
+## Veri kalitesi ve dayanıklılık
+
+Tarayıcı, outcomes log'unu sessizce bozabilecek birkaç yfinance veri tuhaflığını otomatik olarak tespit edip düzeltir:
+
+- **Tatil-gap d1 placeholder'ı** — `signal_date == today` olduğunda ve araya tatil girdiğinde, yfinance d1 için `open == close == signal_close` ve sıfır high/low olan sahte bir bar dönebilir. Tespit edilir ve sonraki koşumda temizlenir.
+- **Forward-fill duplikat zincirleri** — yfinance kapalı pazar günleri (bayram, atlanmamış hafta sonu) için bazen aynı barı duplikat döndürür. Takvim duyarlılığı olmadan bunlar geçerli d2, d3, … değerleri olarak saklanır. Tarayıcı 3+ ardışık özdeş `d_n_pct` çalıştırmalarını tespit edip temizler.
+- **Gelecek-tarih placeholder'ı** — yfinance henüz işlem görmemiş tarihler için placeholder bar dönebilir. Per-day fill loop'undaki gelecek-tarih kontrolü bunların yazılmasını engeller.
+- **Bayat forward-fill barlar** — sıfır hacim VE sıfır gün-içi range olan barlar forward-fill artefaktıdır; refill sırasında reddedilir.
+- **Bölünme ölçek tutarsızlığı** — sinyal_date ile sonraki bir outcome güncellemesi arasında hisse bölündüğünde, `signal_close` (sinyal anında alınmış) ve d1 OHLC (adjusted olarak yeniden çekilmiş) farklı ölçeklerde olur. `split_suspect = "T"` ile işaretlenip analiz filtrelerinde dışlanır.
+
+## Tamamlayıcı araçlar
+
+Ana tarayıcının yanında veri üreten opsiyonel scriptler. Her birinin kendi log dosyası vardır ve bağımsız çalıştırılabilir.
+
+### `morning_snapshot.py` — gün-içi erken okuma
+
+Bir önceki seansın sinyalleri için ilk ~50 dakikalık işlemi yakalar. Gap-up yönünün ve ilk-saat hacminin ertesi gün sonucunu kapanıştan önce onaylayıp onaylamadığını test etmek için yararlı. Çıktı: `morning_snapshots_xu*.csv`.
+
+Açılıştan kısa süre sonra (yaklaşık 10:50 İstanbul saati) çalıştır:
+
+```bash
+python morning_snapshot.py            # XU100
+python morning_snapshot.py -i xu500   # XU500
+```
+
+### `bist_signal_followup.py` — son sinyallerin hızlı istatistiği
+
+En son sinyal tarihinin d1 sonuçlarını performansa göre sıralı şekilde, piyasaya rölatif özetle ekrana basar. Log dosyası yok; saf görüntüleme aracı.
+
+```bash
+python bist_signal_followup.py            # XU100
+python bist_signal_followup.py -i xu500   # XU500
+```
+
+### `bist_mean_reversion_scanner.py` — alternatif strateji
+
+Kapanışın EMA20/EMA50'den belirgin sapmalarını (yukarı veya aşağı) işaretleyen ikinci bir tarayıcı. Kendi log yapısı vardır ve 5 günlük sonuçları `mr_outcomes_xu*.csv` ile takip eder. Sinyalleri kırılım yerine mean-reversion merceğinden çapraz doğrulamak için kullanışlı.
+
+```bash
+python bist_mean_reversion_scanner.py            # XU100
+python bist_mean_reversion_scanner.py -i xu500   # XU500
+```
 
 ## Proje yapısı
 
 ```
 bist-ema-scanner/
-├── bist_ema_scanner.py         # Ana tarayıcı
-├── update_index.py         # Hisse listesi yenileyici (KAP + Midas yedek)
-├── debug_ticker.py         # Tek hisse teşhis aracı
-├── xu100.csv               # Hisse listeleri (oluşturulur)
+├── bist_ema_scanner.py             # Ana tarayıcı
+├── bist_calendar.py                # BIST işlem-günü takvim yardımcısı
+├── bist_holidays.txt               # Manuel tutulan tatil listesi
+├── update_index.py                 # Hisse listesi yenileyici (KAP + Midas yedek)
+├── debug_ticker.py                 # Tek hisse teşhis aracı
+│
+├── morning_snapshot.py             # Gün-içi erken okuma (tamamlayıcı)
+├── bist_signal_followup.py         # Son sinyal hızlı istatistik (tamamlayıcı)
+├── bist_mean_reversion_scanner.py  # Mean-reversion tarayıcısı (tamamlayıcı)
+│
+├── xu100.csv                       # Hisse listeleri (oluşturulur)
 ├── xu500.csv
-├── signals_log_xu*.csv     # Sinyal geçmişi (oluşturulur)
-├── outcomes_xu*.csv        # Sonuç takibi (oluşturulur)
+├── signals_log_xu*.csv             # Sinyal geçmişi (oluşturulur)
+├── outcomes_xu*.csv                # Sonuç takibi (oluşturulur)
+├── morning_snapshots_xu*.csv       # Gün-içi snapshot'lar (oluşturulur)
+├── mr_outcomes_xu*.csv             # Mean-reversion sonuçları (oluşturulur)
+│
 ├── requirements.txt
 ├── LICENSE
 ├── README.md
@@ -182,17 +271,19 @@ bist-ema-scanner/
 
 - **Hisse listeleri:** [KAP (Kamuyu Aydınlatma Platformu)](https://kap.org.tr/tr/Endeksler) — birincil. [Midas](https://www.getmidas.com/canli-borsa/) — yedek.
 - **Fiyat geçmişi:** [Yahoo Finance](https://finance.yahoo.com/), `yfinance` kütüphanesi üzerinden, `auto_adjust=True` ile — yani EMA'lar temettü ve bedelsizlerden arındırılmış kapanışlar üzerinden hesaplanır.
+- **İşlem takvimi:** `bist_holidays.txt` dosyasında manuel olarak tutulur.
 
 ## Sınırlamalar ve bilinen sorunlar
 
 - **Yahoo veri gecikmesi:** BIST kapanışından ~15-30 dk sonra. Tarayıcıyı 18:30'dan önce çalıştırma, yoksa bugünün barı eksik gelir.
-- **Düzeltilmiş fiyatlar:** Yahoo'nun düzeltmesi her zaman BIST hisselerinde mükemmel olmuyor — özellikle bedelsiz sermaye artırımı yapanlarda. Bir sayı tuhaf görünüyorsa aracı kurumunun grafiğinden kontrol et.
+- **Düzeltilmiş fiyatlar ve bölünmeler:** Bir sinyal kaydedildikten sonra hisse bölündüğünde, `signal_close` ve d1 OHLC farklı ölçeklere düşer. Tarayıcı bunu tespit edip `split_suspect = "T"` koyar; downstream analizler bunları filtrelemelidir.
 - **Borsa dışı kalan hisseler:** BIST'ten çıkarılan bir hisse için yfinance "possibly delisted" uyarısı verir. Üç aylık dengelemeden sonra `update_index.py`'yi tekrar çalıştırarak listeyi tazele.
-- **Al/sat tavsiyesi değildir.** Bu sinyal tek başına yaklaşık yazı-tura isabet oranındadır (crossover stratejilerinin tipik özelliği). Asıl avantaj pozisyon büyüklüğü, zarar-kes (stop-loss) ve piyasa rejimi filtreleriyle birleştiğinde gelir — bu araç bunların hiçbirini içermez.
+- **Tatil takvimi bakımı:** `bist_holidays.txt` resmî BIST takvimi yayımlandığında yılda bir güncellenmek zorunda; yoksa yeni tatiller çevresindeki outcome'lar sessizce forward-filled barlara düşer.
+- **Al/sat tavsiyesi değildir.** Temel sinyal tek başına yaklaşık yazı-tura isabet oranındadır (crossover stratejilerinin tipik özelliği). Asıl avantaj filtrelerle (gap yönü, gün-içi kapanış pozisyonu, hacim sürekliliği, piyasa rejimi, sinyal sırası) ve disiplinli pozisyon büyüklüğü/stop yönetimiyle birleştiğinde gelir — bu araç bunların hiçbirini içermez.
 
 ## Katkı
 
-Issue ve pull request'ler memnuniyetle kabul edilir. Bir strateji değişikliği öneriyorsan (ör. yeni bir trigger tipi), lütfen geçmiş `outcomes_xu*.csv` verisi üzerinden nasıl performans gösterdiğine dair kısa bir analiz ekle.
+Issue ve pull request'ler memnuniyetle kabul edilir. Bir strateji değişikliği öneriyorsan (ör. yeni bir trigger tipi ya da yeni bir outcome kolonu), lütfen geçmiş `outcomes_xu*.csv` verisi üzerinden nasıl performans gösterdiğine dair kısa bir analiz ve falsifiable bir hipotez ifadesi (sonucun aşması beklenen önceden belirlenmiş bir eşik) ekle.
 
 ## Yasal uyarı
 
