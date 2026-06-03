@@ -1,5 +1,5 @@
 """
-BIST EMA Breakout Scanner (v1.8)
+BIST EMA Breakout Scanner (v1.9)
 --------------------------------
 Scans BIST stocks for an EMA breakout pattern. Fires when today's close
 is above both EMA20 and EMA50, AND at least one of:
@@ -94,6 +94,23 @@ v1.8 changes:
       the row T and clears d1_close_in_range (which would have been
       meaningless on inconsistent inputs).
 
+v1.9 changes:
+    - Two new signal-time columns: days_above_ema20 and days_above_ema50.
+      Each counts consecutive trading days ending at signal_date
+      (inclusive) where close finished above the named EMA. The signal
+      day itself always counts as 1 because the trigger requires it.
+        days_above_ema20  -> short-to-mid trend age. Distinguishes a
+                             fresh cross-above (=1) from a stock that's
+                             been riding above EMA20 for weeks (=15+).
+        days_above_ema50  -> longer-term trend age. EMA50 acts as the
+                             structural trend boundary.
+      The difference (ema50_age minus ema20_age) reveals mature trends
+      with shallow recent pullbacks: ema50_age=30, ema20_age=2 means a
+      long-running uptrend that just reclaimed EMA20 after a brief dip.
+      Both columns appear in signals_log and outcomes; the outcome row
+      gets them seeded at signal time since the values are signal-day
+      info that won't change as outcomes accumulate.
+
 Refresh ticker lists with:
     python update_index.py -i xu100
     python update_index.py -i xu500
@@ -162,6 +179,15 @@ SIGNAL_COLUMNS = [
     # signal time, so it can serve as an entry filter (unlike post-signal
     # golden-cross timing, which is circular).
     "ema_gap_pct",
+    # Consecutive trading days ending at signal_date (inclusive) where
+    # close finished above each EMA. Signal day itself counts as 1 by
+    # definition of the trigger.
+    #   days_above_ema20 -> short/mid trend age. 1 = fresh cross-above,
+    #                        higher = stock has been above EMA20 a while.
+    #   days_above_ema50 -> longer trend age. EMA50 = structural boundary.
+    # The difference (ema50 - ema20) reveals mature trends with shallow
+    # recent EMA20 pullbacks (long uptrend that just reclaimed EMA20).
+    "days_above_ema20", "days_above_ema50",
 ]
 
 OUTCOME_COLUMNS = [
@@ -226,6 +252,11 @@ OUTCOME_COLUMNS = [
     # didn't follow. Excluded from clean analysis; left in the file for
     # later manual handling.
     "split_suspect",
+    # Mirrors of the signals_log columns of the same name. Signal-day
+    # information, seeded at signal time, never refilled by update_outcomes.
+    # Available here so analyses joining outcomes don't need to merge
+    # against signals_log just to access trend age.
+    "days_above_ema20", "days_above_ema50",
 ]
 
 # Yahoo Finance symbol for the BIST 100 index. Used as the market benchmark
@@ -318,6 +349,21 @@ def matches_signal(today: pd.Series, yesterday: pd.Series) -> bool:
     return bool(breakout or gap_down_recovery)
 
 
+def days_above_ema(df: pd.DataFrame, signal_idx: int, ema_col: str) -> int:
+    """Count consecutive trading days, ending at signal_idx (inclusive),
+    where Close > the named EMA column. Walks backward from signal_idx
+    and stops at the first day where close <= ema. Returns 0 if even
+    the signal day itself is not above (shouldn't happen for valid hits;
+    the trigger requires close > both EMAs)."""
+    count = 0
+    for j in range(signal_idx, -1, -1):
+        if df.iloc[j]["Close"] > df.iloc[j][ema_col]:
+            count += 1
+        else:
+            break
+    return count
+
+
 def scan(target_date: str | None, tickers_path: Path, updater_hint: str) -> list[dict]:
     tickers = load_tickers(tickers_path, updater_hint)
     hits = []
@@ -341,9 +387,11 @@ def scan(target_date: str | None, tickers_path: Path, updater_hint: str) -> list
                     continue
                 today = df.iloc[idx]
                 yesterday = df.iloc[idx - 1]
+                signal_idx = idx
             else:
                 today = df.iloc[-1]
                 yesterday = df.iloc[-2]
+                signal_idx = len(df) - 1
 
             if matches_signal(today, yesterday):
                 t_upper = max(float(today["EMA20"]), float(today["EMA50"]))
@@ -355,6 +403,11 @@ def scan(target_date: str | None, tickers_path: Path, updater_hint: str) -> list
                 # Classify: BRK (yesterday closed below upper) takes priority;
                 # otherwise GDN (today's open was below upper).
                 trigger = "BRK" if float(yesterday["Close"]) < y_upper else "GDN"
+                # Trend age: how long has close stayed above each EMA?
+                # Signal day counts as 1 (the trigger requires close > both
+                # EMAs); we walk back until close <= ema.
+                ema20_age = days_above_ema(df, signal_idx, "EMA20")
+                ema50_age = days_above_ema(df, signal_idx, "EMA50")
                 hits.append({
                     "ticker": ticker,
                     "date": today.name.strftime("%Y-%m-%d") if hasattr(today.name, "strftime") else str(today.name),
@@ -374,6 +427,8 @@ def scan(target_date: str | None, tickers_path: Path, updater_hint: str) -> list
                     "t_ema50": float(today["EMA50"]),
                     "break_pct": (close - t_upper) / t_upper * 100,
                     "vol_ratio": vol_ratio,
+                    "days_above_ema20": ema20_age,
+                    "days_above_ema50": ema50_age,
                 })
         except Exception as e:
             sys.stdout.write(f"\r[{i:>3}/{total}] {ticker:<10}  ERROR: {e}\n")
@@ -516,6 +571,8 @@ def append_signals_log(hits: list[dict], signals_path: Path):
                 "vol_ratio": round(h["vol_ratio"], 4),
                 "day_of_week": _weekday_name(h["date"]),
                 "ema_gap_pct": round(ema_gap, 4),
+                "days_above_ema20": h["days_above_ema20"],
+                "days_above_ema50": h["days_above_ema50"],
             })
     print(f"Logged {len(new_rows)} signal(s) to {signals_path.name}")
 
@@ -550,9 +607,12 @@ def update_outcomes(new_hits: list[dict], outcomes_path: Path):
             "trigger": h["trigger"],
             "signal_close": round(h["close"], 4),
             "signal_close_in_range": sig_cir,
+            "days_above_ema20": h["days_above_ema20"],
+            "days_above_ema50": h["days_above_ema50"],
             **{col: "" for col in OUTCOME_COLUMNS if col not in
                ("signal_date", "ticker", "trigger",
-                "signal_close", "signal_close_in_range")},
+                "signal_close", "signal_close_in_range",
+                "days_above_ema20", "days_above_ema50")},
         })
 
     # Step 3: pre-fetch the XU100 index series once. We'll use it to fill

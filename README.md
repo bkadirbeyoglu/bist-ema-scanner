@@ -12,7 +12,7 @@ A daily end-of-session scanner for Borsa İstanbul (BIST) stocks that flags EMA-
 
 ## What it does
 
-After the BIST close, run `bist_ema_scanner.py`. It walks every stock in the chosen index (XU100 by default, or XU500), fetches the last 6 months of daily candles from Yahoo Finance, computes EMA-20 and EMA-50, and prints the stocks where today's session matches one of two breakout patterns. Hits are appended to a CSV log, and the outcome of every past hit (1-10 day follow-up returns, intraday range, volume continuity, market-relative performance) is filled in automatically as more sessions pass.
+After the BIST close, run `bist_ema_scanner.py`. It walks every stock in the chosen index (XU100 by default, or XU500), fetches the last 6 months of daily candles from Yahoo Finance, computes EMA-20 and EMA-50, and prints the stocks where today's session matches one of two breakout patterns. Hits are appended to a CSV log, and the outcome of every past hit (1-10 day follow-up returns, intraday range, volume continuity, market-relative performance, trend age) is filled in automatically as more sessions pass.
 
 ## The signal
 
@@ -174,6 +174,7 @@ Append-only history. Columns:
 | `break_pct`, `vol_ratio` | Distance above upper EMA; today's volume vs 20-day average |
 | `day_of_week` | Day name (Mon/Tue/…) for easy weekday analysis |
 | `ema_gap_pct` | EMA20-EMA50 spread as % of EMA50; sign indicates trend stack |
+| `days_above_ema20`, `days_above_ema50` | Trend age — consecutive trading days ending at signal_date (inclusive) where close finished above each EMA |
 
 Duplicate-protected on `(scan_date, signal_date, ticker)` — running the scanner multiple times the same day is safe.
 
@@ -193,9 +194,11 @@ Self-updating. New signals are inserted with empty outcome cells. On subsequent 
 
 **Market-relative reference.** `xu100_open`, `xu100_close`, `xu100_d1_open`, `xu100_d1_close` — BIST 100 index values on the signal day and the next trading day. Lets you compute the signal's market-relative return without re-fetching the index.
 
+**Trend age.** `days_above_ema20` and `days_above_ema50` — count of consecutive trading days ending at signal_date (inclusive) where close finished above each EMA. Mirrors the columns of the same name in `signals_log_*.csv`; seeded at signal time and never refilled by outcome updates. The signal day itself always counts as 1 because the trigger requires close > both EMAs. Lets analyses distinguish fresh crosses (=1) from mature trends, and lets the difference `days_above_ema50 − days_above_ema20` flag mature uptrends with shallow recent EMA20 pullbacks.
+
 **Status flags.** `at_limit` — "T" if d1 hit the BIST ±10% price limit. `split_suspect` — "T" when d1 OHLC shows a scale inconsistency with `signal_close` (the fingerprint of a stock split between signal time and the outcome update). Split-suspect rows should be excluded from analysis: `df[df['split_suspect'] != 'T']`.
 
-After a few weeks, this file is a goldmine for analysis: open it in Excel or pandas, pivot by `trigger`, by `vol_ratio` bucket, by `break_pct` quintile, by gap size (`d1_open - signal_close`), by `close_in_range` position, by `day_of_week`, or by market-relative performance, and see which conditions actually predict positive subsequent returns.
+After a few weeks, this file is a goldmine for analysis: open it in Excel or pandas, pivot by `trigger`, by `vol_ratio` bucket, by `break_pct` quintile, by gap size (`d1_open - signal_close`), by `close_in_range` position, by `day_of_week`, by `days_above_ema20` band, or by market-relative performance, and see which conditions actually predict positive subsequent returns.
 
 ## Data quality and robustness
 
@@ -206,6 +209,10 @@ The scanner self-heals from several yfinance data quirks that can otherwise corr
 - **Future-date placeholder** — yfinance can return placeholder bars for dates that haven't traded yet. A future-date guard in the per-day fill loop prevents these from being written.
 - **Stale forward-fill bars** — bars with zero volume AND zero intraday range are forward-fill artifacts; rejected during refill.
 - **Split scale mismatch** — when a stock splits between signal_date and a later outcome update, `signal_close` (captured at signal time) and d1 OHLC (re-fetched as adjusted) end up in different scales. Flagged via `split_suspect = "T"` and excluded from analysis filters.
+
+## Schema migrations
+
+Both log files automatically migrate to the current schema when the scanner runs. If new columns have been added between versions (e.g. `signal_close_in_range` in v1.6, `split_suspect` in v1.7, `days_above_ema20` / `days_above_ema50` in v1.9), the scanner prints a "Migrating … adding columns […]" line on the next run and rewrites the file with the new headers; existing rows get empty values for the new columns. Pre-migration data is preserved untouched. This means analyses joining old and new rows should expect some columns to be empty for older signals.
 
 ## Companion tools
 
@@ -279,7 +286,8 @@ bist-ema-scanner/
 - **Adjusted prices and splits:** When a stock splits between when a signal was recorded and a later outcome update, `signal_close` and d1 OHLC end up scaled differently. The scanner detects this and sets `split_suspect = "T"`; downstream analysis should filter these out.
 - **Delisted tickers:** A stock removed from BIST will print a "possibly delisted" warning from yfinance. Re-run `update_index.py` after a quarterly rebalance to refresh.
 - **Holiday calendar maintenance:** `bist_holidays.txt` must be updated annually when the official BIST calendar is published; otherwise outcomes around new holidays will silently fall back to forward-filled bars.
-- **Not a buy/sell recommendation.** The base signal has roughly coin-flip accuracy on its own (typical for crossover strategies). Real edge comes from combining it with filters (gap direction, intraday close position, volume continuity, market regime, signal sequence) and discipline around position sizing and stops — none of which this tool implements.
+- **Empty cells for pre-migration data:** Signals logged before a given column was introduced will have empty values in that column. Filter or impute accordingly when joining across schema generations.
+- **Not a buy/sell recommendation.** The base signal has roughly coin-flip accuracy on its own (typical for crossover strategies). Real edge comes from combining it with filters (gap direction, intraday close position, volume continuity, market regime, signal sequence, trend age) and discipline around position sizing and stops — none of which this tool implements.
 
 ## Contributing
 
