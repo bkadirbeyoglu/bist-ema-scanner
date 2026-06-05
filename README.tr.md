@@ -12,7 +12,7 @@ Borsa İstanbul (BIST) hisselerini her seans sonu tarayan, EMA-20 / EMA-50 kır�
 
 ## Ne yapar
 
-BIST kapanışından sonra `bist_ema_scanner.py`'yi çalıştırırsın. Seçtiğin endeksteki (varsayılan XU100, alternatif XU500) her hisse için Yahoo Finance'tan son 6 ayın günlük mumlarını çeker, EMA-20 ve EMA-50'yi hesaplar, ve bugünkü kapanışı iki kırılım örüntüsünden birine uyan hisseleri ekrana basar. Bulunan sinyaller bir CSV'ye eklenir; geçmişteki her sinyalin sonraki 1-10 günlük getirisi, gün-içi range bilgisi, hacim sürekliliği, piyasaya göre rölatif performansı ve trend yaşı da yeni günler geçtikçe otomatik olarak doldurulur.
+BIST kapanışından sonra `bist_ema_scanner.py`'yi çalıştırırsın. Seçtiğin endeksteki (varsayılan XU100, alternatif XU500) her hisse için Yahoo Finance'tan son 6 ayın günlük mumlarını çeker, EMA-20 ve EMA-50'yi hesaplar, ve bugünkü kapanışı iki kırılım örüntüsünden birine uyan hisseleri ekrana basar. Bulunan sinyaller bir CSV'ye eklenir; geçmişteki her sinyalin sonraki 1-10 günlük getirisi, gün-içi range bilgisi, hacim sürekliliği, piyasaya göre rölatif performansı, trend yaşı ve likidite profili de yeni günler geçtikçe otomatik olarak doldurulur.
 
 ## Sinyal tanımı
 
@@ -175,6 +175,7 @@ Sadece eklenen geçmiş kayıt dosyası. Sütunlar:
 | `day_of_week` | Gün adı (Mon/Tue/…) — haftalık etki analizi için |
 | `ema_gap_pct` | EMA20-EMA50 farkı, EMA50'nin % olarak; işareti trend istifini gösterir |
 | `days_above_ema20`, `days_above_ema50` | Trend yaşı — sinyal günü dahil, kapanışın her EMA'nın üstünde kaldığı ardışık işlem günü sayısı |
+| `avg_tl_volume_20d` | Sinyalden önceki 20 günün ortalama TL hacmi (close × volume); hissenin parasal likiditesi |
 
 `(scan_date, signal_date, ticker)` üçlüsüne göre mükerrer kayıt korumalı — aynı gün tarayıcıyı kaç kez çalıştırırsan çalıştır sorun olmaz.
 
@@ -196,9 +197,11 @@ Kendi kendini güncelleyen dosya. Yeni sinyaller boş outcome hücreleriyle ekle
 
 **Trend yaşı.** `days_above_ema20` ve `days_above_ema50` — sinyal günü dahil, kapanışın her EMA'nın üstünde kaldığı ardışık işlem günü sayısı. `signals_log_*.csv` dosyasındaki aynı isimli kolonların aynası; sinyal anında tohumlanır, outcome güncellemeleri tarafından değiştirilmez. Sinyal günü tetikleyici tanımı gereği daima 1 sayılır (kapanış iki EMA'nın üstünde olmak zorunda). Taze kırılımları (=1) olgun trendlerden ayırt etmeyi sağlar; `days_above_ema50 − days_above_ema20` farkı, son zamanlarda sığ bir EMA20 geri çekilmesi yaşamış olgun yukarı trendleri işaretler.
 
+**Likidite.** `avg_tl_volume_20d` — (close × volume) değerinin 20 günlük yuvarlanan ortalaması, 1 gün shift edilmiş. `signals_log_*.csv` dosyasındaki aynı isimli kolonun aynası; sinyal anında tohumlanır, outcome güncellemeleri tarafından değiştirilmez. Hissenin son dönemdeki **parasal likiditesini** Türk lirası cinsinden temsil eder — bir tüccarın bir seansta gerçekçi olarak hareket ettirebileceği büyüklük. Hisse sayısı bazlı değil TL bazlıdır çünkü evren çapında fiyat ölçekleri çok farklı (1 TL'lik hissedeki 1M lot ile 1000 TL'lik hissedeki 1M lot çok farklı likiditelerdir). Analiz cohortlarını sulandıran mikro-likit uç vakaları filtrelemek için kullanılır.
+
 **Durum bayrakları.** `at_limit` — d1 BIST ±%10 fiyat limitine takıldıysa "T". `split_suspect` — d1 OHLC ile `signal_close` arasında ölçek tutarsızlığı varsa "T" (sinyal anı ile outcome güncellemesi arasında hissede bölünme olduğunun parmak izi). Split-suspect satırlar analizlerde dışlanmalı: `df[df['split_suspect'] != 'T']`.
 
-Birkaç hafta sonra bu dosya analiz için altın değerinde olur: Excel veya pandas'ta aç, `trigger`'a göre, `vol_ratio` aralıklarına göre, `break_pct` quintile'larına göre, gap büyüklüğüne göre (`d1_open - signal_close`), `close_in_range` pozisyonuna göre, `day_of_week`'e göre, `days_above_ema20` bandına göre veya piyasa-rölatif performansa göre pivot çek ve hangi koşulların gerçekten pozitif getiri öngördüğünü gör.
+Birkaç hafta sonra bu dosya analiz için altın değerinde olur: Excel veya pandas'ta aç, `trigger`'a göre, `vol_ratio` aralıklarına göre, `break_pct` quintile'larına göre, gap büyüklüğüne göre (`d1_open - signal_close`), `close_in_range` pozisyonuna göre, `day_of_week`'e göre, `days_above_ema20` bandına göre, `avg_tl_volume_20d` decile'ına göre veya piyasa-rölatif performansa göre pivot çek ve hangi koşulların gerçekten pozitif getiri öngördüğünü gör.
 
 ## Veri kalitesi ve dayanıklılık
 
@@ -212,7 +215,7 @@ Tarayıcı, outcomes log'unu sessizce bozabilecek birkaç yfinance veri tuhaflı
 
 ## Şema göçleri (schema migrations)
 
-İki log dosyası da tarayıcı çalıştığında güncel şemaya otomatik olarak geçer. Sürümler arasında yeni kolonlar eklendiyse (örn. v1.6'da `signal_close_in_range`, v1.7'de `split_suspect`, v1.9'da `days_above_ema20` / `days_above_ema50`), tarayıcı bir sonraki koşumda "Migrating … adding columns […]" satırı basar ve dosyayı yeni başlıklarla yeniden yazar; mevcut satırların yeni kolonları boş olur. Göç öncesi veri olduğu gibi korunur. Bu, eski ve yeni satırları birleştiren analizlerin eski sinyaller için bazı kolonların boş olabileceğini beklemesi gerektiği anlamına gelir.
+İki log dosyası da tarayıcı çalıştığında güncel şemaya otomatik olarak geçer. Sürümler arasında yeni kolonlar eklendiyse (örn. v1.6'da `signal_close_in_range`, v1.7'de `split_suspect`, v1.9'da `days_above_ema20` / `days_above_ema50`, v1.10'da `avg_tl_volume_20d`), tarayıcı bir sonraki koşumda "Migrating … adding columns […]" satırı basar ve dosyayı yeni başlıklarla yeniden yazar; mevcut satırların yeni kolonları boş olur. Göç öncesi veri olduğu gibi korunur. Bu, eski ve yeni satırları birleştiren analizlerin eski sinyaller için bazı kolonların boş olabileceğini beklemesi gerektiği anlamına gelir.
 
 ## Tamamlayıcı araçlar
 
@@ -287,7 +290,7 @@ bist-ema-scanner/
 - **Borsa dışı kalan hisseler:** BIST'ten çıkarılan bir hisse için yfinance "possibly delisted" uyarısı verir. Üç aylık dengelemeden sonra `update_index.py`'yi tekrar çalıştırarak listeyi tazele.
 - **Tatil takvimi bakımı:** `bist_holidays.txt` resmî BIST takvimi yayımlandığında yılda bir güncellenmek zorunda; yoksa yeni tatiller çevresindeki outcome'lar sessizce forward-filled barlara düşer.
 - **Göç öncesi veri için boş hücreler:** Belirli bir kolon eklenmeden önce log'a yazılmış sinyaller o kolonda boş değer taşır. Şema kuşaklarını birleştirirken filtrele veya uygun şekilde doldur.
-- **Al/sat tavsiyesi değildir.** Temel sinyal tek başına yaklaşık yazı-tura isabet oranındadır (crossover stratejilerinin tipik özelliği). Asıl avantaj filtrelerle (gap yönü, gün-içi kapanış pozisyonu, hacim sürekliliği, piyasa rejimi, sinyal sırası, trend yaşı) ve disiplinli pozisyon büyüklüğü/stop yönetimiyle birleştiğinde gelir — bu araç bunların hiçbirini içermez.
+- **Al/sat tavsiyesi değildir.** Temel sinyal tek başına yaklaşık yazı-tura isabet oranındadır (crossover stratejilerinin tipik özelliği). Asıl avantaj filtrelerle (gap yönü, gün-içi kapanış pozisyonu, hacim sürekliliği, piyasa rejimi, sinyal sırası, trend yaşı, likidite) ve disiplinli pozisyon büyüklüğü/stop yönetimiyle birleştiğinde gelir — bu araç bunların hiçbirini içermez.
 
 ## Katkı
 

@@ -1,6 +1,6 @@
 """
-BIST EMA Breakout Scanner (v1.9)
---------------------------------
+BIST EMA Breakout Scanner (v1.10)
+---------------------------------
 Scans BIST stocks for an EMA breakout pattern. Fires when today's close
 is above both EMA20 and EMA50, AND at least one of:
 
@@ -111,6 +111,22 @@ v1.9 changes:
       gets them seeded at signal time since the values are signal-day
       info that won't change as outcomes accumulate.
 
+v1.10 changes:
+    - New signal-time column: avg_tl_volume_20d. Twenty-day rolling mean
+      of (close * volume), shifted by 1 so it reflects the average TL
+      (Turkish lira) volume traded over the 20 sessions PRIOR to the
+      signal day. Same convention as VOL_AVG20.
+        Why TL volume, not share volume? Liquidity is monetary, not
+        share-count. 1M shares of a 1 TL stock (1M TL/day) is very
+        different liquidity from 1M shares of a 1000 TL stock (1B TL).
+        TL volume is the industry-standard liquidity measure.
+        Why a filter? Edge-cases like ISKPL (45 minutes without a single
+        trade during BIST hours) silently dilute analysis cohorts.
+        Filtering out the lowest decile by TL volume sharpens the
+        statistics for the rest. The value is stored raw (in TL); analysis
+        side decides where to put the cutoff.
+      Stored in both signals_log and outcomes, seeded at signal time.
+
 Refresh ticker lists with:
     python update_index.py -i xu100
     python update_index.py -i xu500
@@ -188,6 +204,12 @@ SIGNAL_COLUMNS = [
     # The difference (ema50 - ema20) reveals mature trends with shallow
     # recent EMA20 pullbacks (long uptrend that just reclaimed EMA20).
     "days_above_ema20", "days_above_ema50",
+    # 20-day rolling mean of (close * volume), shifted by 1. Represents
+    # the monetary liquidity of the stock — what a trader could
+    # realistically move per session — using the 20 sessions BEFORE the
+    # signal day. Stored in TL (raw integer); analysis side decides
+    # cutoffs (e.g. exclude lowest decile for clean cohort statistics).
+    "avg_tl_volume_20d",
 ]
 
 OUTCOME_COLUMNS = [
@@ -257,6 +279,10 @@ OUTCOME_COLUMNS = [
     # Available here so analyses joining outcomes don't need to merge
     # against signals_log just to access trend age.
     "days_above_ema20", "days_above_ema50",
+    # Mirror of signals_log avg_tl_volume_20d — 20-day rolling mean TL
+    # volume (close * volume) at signal time. Same seed-once semantics
+    # as days_above_ema. Use for liquidity filtering in analysis.
+    "avg_tl_volume_20d",
 ]
 
 # Yahoo Finance symbol for the BIST 100 index. Used as the market benchmark
@@ -321,6 +347,12 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # 20-day average volume, shifted by 1 so today's volume is compared to
     # the average of the PREVIOUS 20 days (today's volume isn't in its own avg).
     df["VOL_AVG20"] = df["Volume"].rolling(window=20).mean().shift(1)
+    # 20-day average TL (Turkish lira) volume = close * volume, rolling mean,
+    # same shift(1) convention as VOL_AVG20. This is the monetary liquidity
+    # of the stock — what a trader could realistically move per session.
+    # Share-volume alone is misleading because price scales differ wildly
+    # across the universe (e.g. 1M shares of 1 TL vs 1M shares of 1000 TL).
+    df["TL_VOL_AVG20"] = (df["Close"] * df["Volume"]).rolling(window=20).mean().shift(1)
     return df
 
 
@@ -400,6 +432,12 @@ def scan(target_date: str | None, tickers_path: Path, updater_hint: str) -> list
                 vol = float(today["Volume"])
                 vol_avg = float(today["VOL_AVG20"]) if pd.notna(today["VOL_AVG20"]) else 0.0
                 vol_ratio = vol / vol_avg if vol_avg > 0 else 0.0
+                # 20-day average TL volume — the stock's recent monetary
+                # liquidity. Stored raw (in TL) so analysis can choose
+                # cutoffs (e.g. exclude bottom decile). 0 when insufficient
+                # history (first 20 bars) or all-NaN — same fallback as
+                # vol_avg above.
+                tl_vol_avg = float(today["TL_VOL_AVG20"]) if pd.notna(today["TL_VOL_AVG20"]) else 0.0
                 # Classify: BRK (yesterday closed below upper) takes priority;
                 # otherwise GDN (today's open was below upper).
                 trigger = "BRK" if float(yesterday["Close"]) < y_upper else "GDN"
@@ -427,6 +465,7 @@ def scan(target_date: str | None, tickers_path: Path, updater_hint: str) -> list
                     "t_ema50": float(today["EMA50"]),
                     "break_pct": (close - t_upper) / t_upper * 100,
                     "vol_ratio": vol_ratio,
+                    "avg_tl_volume_20d": tl_vol_avg,
                     "days_above_ema20": ema20_age,
                     "days_above_ema50": ema50_age,
                 })
@@ -573,6 +612,7 @@ def append_signals_log(hits: list[dict], signals_path: Path):
                 "ema_gap_pct": round(ema_gap, 4),
                 "days_above_ema20": h["days_above_ema20"],
                 "days_above_ema50": h["days_above_ema50"],
+                "avg_tl_volume_20d": round(h["avg_tl_volume_20d"]),
             })
     print(f"Logged {len(new_rows)} signal(s) to {signals_path.name}")
 
@@ -609,10 +649,12 @@ def update_outcomes(new_hits: list[dict], outcomes_path: Path):
             "signal_close_in_range": sig_cir,
             "days_above_ema20": h["days_above_ema20"],
             "days_above_ema50": h["days_above_ema50"],
+            "avg_tl_volume_20d": round(h["avg_tl_volume_20d"]),
             **{col: "" for col in OUTCOME_COLUMNS if col not in
                ("signal_date", "ticker", "trigger",
                 "signal_close", "signal_close_in_range",
-                "days_above_ema20", "days_above_ema50")},
+                "days_above_ema20", "days_above_ema50",
+                "avg_tl_volume_20d")},
         })
 
     # Step 3: pre-fetch the XU100 index series once. We'll use it to fill
