@@ -1,5 +1,5 @@
 """
-BIST EMA Breakout Scanner (v1.10)
+BIST EMA Breakout Scanner (v1.11)
 ---------------------------------
 Scans BIST stocks for an EMA breakout pattern. Fires when today's close
 is above both EMA20 and EMA50, AND at least one of:
@@ -126,6 +126,28 @@ v1.10 changes:
         statistics for the rest. The value is stored raw (in TL); analysis
         side decides where to put the cutoff.
       Stored in both signals_log and outcomes, seeded at signal time.
+
+v1.11 changes:
+    - Four new outcome columns: xu100_d2_close, xu100_d3_close,
+      xu100_d4_close, xu100_d5_close. The XU100 index close for each
+      of d2..d5 (anchored to the calendar, NOT yfinance row order, so
+      bayram and weekend gaps are handled correctly).
+        Why? Previously rel_d1 = d1_pct - mkt_d1 was the only
+        market-relative return we could compute. d2..d5 outcomes were
+        absolute returns — partly market drift, partly signal alpha,
+        no way to separate. Many of our composite edges (Cuma+ema>2
+        d5 +5.47%, super winner d5 trajectories, V-recovery patterns)
+        were absolute. The new columns let analyses compute rel_d2..d5
+        and isolate true signal alpha from market beta.
+        The opens of d2..d5 are intentionally NOT stored — we use them
+        as a once-per-day base for cumulative return (signal_close to
+        each subsequent close); the opens would be unused. d1 keeps
+        both open and close (existing schema, preserved for backward
+        compatibility).
+      Filled progressively by update_outcomes() each day as the d2..d5
+      trading days actually occur, in the same way d1_close was already
+      being filled — empty cells on existing rows get populated on the
+      next scan that runs after that trading day.
 
 Refresh ticker lists with:
     python update_index.py -i xu100
@@ -258,11 +280,17 @@ OUTCOME_COLUMNS = [
     # have sat through before any peak. max_5d shows the opportunity; min_5d
     # shows the pain along the way.
     "min_5d_close", "min_5d_pct",
-    # Market-relative reference: XU100 open and close on signal day and d1 day.
-    # The opens let us see XU100's own intraday direction; the closes give
-    # close-to-close moves. Together they let us compute "did this signal
-    # beat the index?" without re-fetching.
-    "xu100_open", "xu100_close", "xu100_d1_open", "xu100_d1_close",
+    # Market-relative reference: XU100 open and close on signal day and
+    # the d1 day, plus XU100 close on each of d2..d5. The d1 opens let
+    # us see XU100's own intraday direction; the closes (signal day +
+    # d1..d5) give the multi-day index trajectory needed for rel_d1..d5
+    # calculations. d2..d5 opens are intentionally omitted — rel returns
+    # only need close-to-close, and adding 4 unused columns would bloat
+    # the schema. d1 keeps both open and close (existing schema).
+    "xu100_open", "xu100_close",
+    "xu100_d1_open", "xu100_d1_close",
+    "xu100_d2_close", "xu100_d3_close",
+    "xu100_d4_close", "xu100_d5_close",
     # at_limit = "T" if d1_pct hit the BIST daily price limit (±10%), else "F".
     # Used to mark clamped outcomes that aren't free-market prices.
     "at_limit",
@@ -674,17 +702,18 @@ def update_outcomes(new_hits: list[dict], outcomes_path: Path):
             xu100_df = None
 
     def fill_xu100_for_row(r: dict, signal_date) -> bool:
-        """Fill XU100 open/close for signal day and d1 day if missing.
-        Returns True if any cell changed.
+        """Fill XU100 open/close for signal day, plus d1 open/close and
+        d2..d5 closes if missing. Returns True if any cell changed.
 
-        d1 is anchored to the next BIST trading day via the calendar
-        helper — NOT to 'whatever index row yfinance returned next'.
-        That distinction matters across bayram gaps where yfinance might
-        otherwise hand back a stale signal-day bar."""
+        Every d_n date is anchored to the BIST trading calendar via
+        nth_trading_day_after — NOT to 'whatever index row yfinance
+        returned n days later'. That distinction matters across bayram
+        and weekend gaps where yfinance might otherwise hand back a
+        stale earlier bar."""
         if xu100_df is None or xu100_df.empty:
             return False
         changed = False
-        # Signal day
+        # Signal day — open and close
         same_day = xu100_df[xu100_df.index.date == signal_date]
         if not same_day.empty:
             bar = same_day.iloc[0]
@@ -694,7 +723,7 @@ def update_outcomes(new_hits: list[dict], outcomes_path: Path):
             if r.get("xu100_close") in ("", None):
                 r["xu100_close"] = round(float(bar["Close"]), 4)
                 changed = True
-        # d1 = next BIST trading day per the calendar
+        # d1 — open and close (existing behavior preserved)
         d1_date = next_trading_day(signal_date, holidays)
         d1_match = xu100_df[xu100_df.index.date == d1_date]
         if not d1_match.empty:
@@ -705,6 +734,20 @@ def update_outcomes(new_hits: list[dict], outcomes_path: Path):
             if r.get("xu100_d1_close") in ("", None):
                 r["xu100_d1_close"] = round(float(bar["Close"]), 4)
                 changed = True
+        # d2..d5 — close only. Each anchored via the trading calendar so
+        # bayram and weekend gaps don't cause off-by-N errors. Loop
+        # rather than unrolled so adding d6..d10 later (if ever needed)
+        # would be a one-line change to range().
+        for n in range(2, 6):
+            d_date = nth_trading_day_after(signal_date, n, holidays)
+            col = f"xu100_d{n}_close"
+            if r.get(col) not in ("", None):
+                continue
+            d_match = xu100_df[xu100_df.index.date == d_date]
+            if d_match.empty:
+                continue
+            r[col] = round(float(d_match.iloc[0]["Close"]), 4)
+            changed = True
         return changed
 
     # Step 4: for each row, try to fill outcome columns from yfinance.

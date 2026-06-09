@@ -193,7 +193,7 @@ Self-updating. New signals are inserted with empty outcome cells. On subsequent 
 
 **Close-in-range positions.** `signal_close_in_range` and `d1_close_in_range` — where each day's close sat within its intraday range, on a [0, 1] scale. 0 = closed at the day's low (weak), 1 = closed at the day's high (strong). Empty when the bar has no intraday range (limit-locked). The d1 version is a hold/exit signal known after the next day's close; the signal version is entry-time information.
 
-**Market-relative reference.** `xu100_open`, `xu100_close`, `xu100_d1_open`, `xu100_d1_close` — BIST 100 index values on the signal day and the next trading day. Lets you compute the signal's market-relative return without re-fetching the index.
+**Market-relative reference.** `xu100_open` and `xu100_close` on the signal day, `xu100_d1_open` and `xu100_d1_close` on the next trading day, plus `xu100_d2_close`, `xu100_d3_close`, `xu100_d4_close`, `xu100_d5_close` — the BIST 100 index close on each of d2..d5. Together they let you compute the signal's market-relative return on every horizon from d1 to d5 without re-fetching the index. The d1 reference gives `rel_d1 = d1_pct − mkt_d1`, where `mkt_d1 = (xu100_d1_close / xu100_close − 1) × 100`; the d2..d5 closes extend the same calculation through the full outcome window. The opens for d2..d5 are intentionally omitted: cumulative returns only need close-to-close from the signal day, so the opens would be unused columns. All d_n dates are anchored to the BIST trading calendar (NOT to whatever row yfinance returns N positions later), so bayram and weekend gaps don't cause off-by-N errors.
 
 **Trend age.** `days_above_ema20` and `days_above_ema50` — count of consecutive trading days ending at signal_date (inclusive) where close finished above each EMA. Mirrors the columns of the same name in `signals_log_*.csv`; seeded at signal time and never refilled by outcome updates. The signal day itself always counts as 1 because the trigger requires close > both EMAs. Lets analyses distinguish fresh crosses (=1) from mature trends, and lets the difference `days_above_ema50 − days_above_ema20` flag mature uptrends with shallow recent EMA20 pullbacks.
 
@@ -201,7 +201,7 @@ Self-updating. New signals are inserted with empty outcome cells. On subsequent 
 
 **Status flags.** `at_limit` — "T" if d1 hit the BIST ±10% price limit. `split_suspect` — "T" when d1 OHLC shows a scale inconsistency with `signal_close` (the fingerprint of a stock split between signal time and the outcome update). Split-suspect rows should be excluded from analysis: `df[df['split_suspect'] != 'T']`.
 
-After a few weeks, this file is a goldmine for analysis: open it in Excel or pandas, pivot by `trigger`, by `vol_ratio` bucket, by `break_pct` quintile, by gap size (`d1_open - signal_close`), by `close_in_range` position, by `day_of_week`, by `days_above_ema20` band, by `avg_tl_volume_20d` decile, or by market-relative performance, and see which conditions actually predict positive subsequent returns.
+After a few weeks, this file is a goldmine for analysis: open it in Excel or pandas, pivot by `trigger`, by `vol_ratio` bucket, by `break_pct` quintile, by gap size (`d1_open - signal_close`), by `close_in_range` position, by `day_of_week`, by `days_above_ema20` band, by `avg_tl_volume_20d` decile, or by market-relative performance at any horizon from d1 through d5, and see which conditions actually predict positive subsequent returns.
 
 ## Data quality and robustness
 
@@ -215,7 +215,7 @@ The scanner self-heals from several yfinance data quirks that can otherwise corr
 
 ## Schema migrations
 
-Both log files automatically migrate to the current schema when the scanner runs. If new columns have been added between versions (e.g. `signal_close_in_range` in v1.6, `split_suspect` in v1.7, `days_above_ema20` / `days_above_ema50` in v1.9, `avg_tl_volume_20d` in v1.10), the scanner prints a "Migrating … adding columns […]" line on the next run and rewrites the file with the new headers; existing rows get empty values for the new columns. Pre-migration data is preserved untouched. This means analyses joining old and new rows should expect some columns to be empty for older signals.
+Both log files automatically migrate to the current schema when the scanner runs. If new columns have been added between versions (e.g. `signal_close_in_range` in v1.6, `split_suspect` in v1.7, `days_above_ema20` / `days_above_ema50` in v1.9, `avg_tl_volume_20d` in v1.10, `xu100_d2_close` / `xu100_d3_close` / `xu100_d4_close` / `xu100_d5_close` in v1.11), the scanner prints a "Migrating … adding columns […]" line on the next run and rewrites the file with the new headers; existing rows get empty values for the new columns. Pre-migration data is preserved untouched. For the v1.11 columns specifically, the new market-reference cells get populated progressively as the scanner runs on subsequent trading days — every signal whose d2..d5 dates have already passed at the time of the next run gets filled in a single pass.
 
 ## Companion tools
 
@@ -290,7 +290,7 @@ bist-ema-scanner/
 - **Delisted tickers:** A stock removed from BIST will print a "possibly delisted" warning from yfinance. Re-run `update_index.py` after a quarterly rebalance to refresh.
 - **Holiday calendar maintenance:** `bist_holidays.txt` must be updated annually when the official BIST calendar is published; otherwise outcomes around new holidays will silently fall back to forward-filled bars.
 - **Empty cells for pre-migration data:** Signals logged before a given column was introduced will have empty values in that column. Filter or impute accordingly when joining across schema generations.
-- **Not a buy/sell recommendation.** The base signal has roughly coin-flip accuracy on its own (typical for crossover strategies). Real edge comes from combining it with filters (gap direction, intraday close position, volume continuity, market regime, signal sequence, trend age, liquidity) and discipline around position sizing and stops — none of which this tool implements.
+- **Not a buy/sell recommendation.** The base signal has roughly coin-flip accuracy on its own (typical for crossover strategies). Real edge comes from combining it with filters (gap direction, intraday close position, volume continuity, market regime, signal sequence, trend age, liquidity, multi-day market-relative performance) and discipline around position sizing and stops — none of which this tool implements.
 
 ## Contributing
 
