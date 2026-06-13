@@ -1,5 +1,5 @@
 """
-BIST EMA Breakout Scanner (v1.11)
+BIST EMA Breakout Scanner (v1.13)
 ---------------------------------
 Scans BIST stocks for an EMA breakout pattern. Fires when today's close
 is above both EMA20 and EMA50, AND at least one of:
@@ -149,6 +149,77 @@ v1.11 changes:
       being filled — empty cells on existing rows get populated on the
       next scan that runs after that trading day.
 
+v1.12 changes:
+    - KAP disclosure context enrichment via optional kap_lookup.py module.
+      Fetches ALL disclosure types (ÖDA, CA, FR, DUY, DG, FON) — not just
+      ÖDA — since financial reports, corporate actions, and general
+      announcements can all carry information relevant to a breakout.
+      After scan() detects hits, a single KAP API call covering the past
+      ~14 calendar days is made; each hit is then filtered against its
+      ticker's disclosures and tagged with five new context columns:
+        kap_count_14d         — total disclosures in past 14 calendar days
+                                (bedelsiz sermaye artırımı = mekanik split
+                                 duyuruları hariç tutulur — fiyat jumps
+                                 mislead the count)
+        kap_oda_count_14d     — disclosureType == "ODA" only (headline
+                                category, surfaced separately for filter)
+        kap_signal_day        — disclosures on signal day itself
+        kap_type_breakdown    — compact "ODA:3 CA:2 FR:1" summary, using
+                                KAP's six native disclosureTypes (ODA
+                                first when present, others in fixed order)
+        kap_category_breakdown — compact "YENI_IS:2 ESAS_SOZ:1 ..." summary
+                                using mechanical Turkish-aware title
+                                pattern matching (classify_category() in
+                                kap_lookup.py), sorted by count desc then
+                                alphabetical. KAP's six types are too
+                                coarse — "ODA" alone covers YENI_IS through
+                                UST_YONETIM through TEMETTU — so this
+                                second breakdown surfaces title sub-types
+                                for easier downstream filtering.
+      No edge classification or tier labelling at scan time. Reasoning:
+      our current hypotheses (YENI_IS pozitif, UST_YONETIM negatif, etc.)
+      come from a 3-4 month sample and are not yet validated on
+      out-of-sample data. Baking them into the operational pipeline
+      would create circularity when we later try to confirm them.
+      Counts are mechanical; category-to-outcome mapping is a separate
+      analysis step on accumulated signals_log × kap_*.csv.
+      print_results() prints two indented lines per signal when both
+      breakdowns are present:
+        └─ KAP:      ODA:3 CA:1 FR:1 [signal-günü: 2]
+        └─ Kategori: YENI_IS:2 ESAS_SOZ:1 OZEL_DURUM:1
+      The Kategori line is omitted when only OTHER classifications exist
+      (no useful information). The signal-day tag appears only when at
+      least one disclosure landed on the signal date itself.
+      Graceful degradation: if kap_lookup.py is missing or the KAP API
+      is unreachable, the five columns are written as empty strings and
+      the scanner continues normally — no exceptions propagate to scan()
+      or update_outcomes().
+      _migrate_log_schema() handles the column addition automatically on
+      the next scan; existing rows get empty values for the new columns.
+
+v1.13 changes:
+    - Two new signal-time columns: ema20_slope and ema50_slope. Each is
+      the percent change of that EMA over the prior EMA_SLOPE_LOOKBACK
+      (=5) trading days, measured at the signal day:
+          (ema_now / ema_5_ago - 1) * 100
+      Positive = EMA rising (trend strengthening up), negative = falling.
+        Why? ema_gap_pct tells us the EMAs are stacked bullishly
+        (post-cross), but not whether that structure is accelerating or
+        going flat. Empirically our single strongest entry-knowable edge
+        is post-cross (ema_gap>0). Slope is meant to refine it: a breakout
+        into a rising EMA stack should carry differently from one into a
+        flat/rolling-over stack with the same instantaneous gap.
+        Why a %, not a raw price slope? Comparability across the universe
+        — a 2 TL/day rise means nothing without the price level. Same
+        rationale as ema_gap_pct. Total move over the window; per-bar
+        slope is simply this / EMA_SLOPE_LOOKBACK. ATR-normalisation is a
+        deliberate later step (waits on the ATR feature) — for now this is
+        a plain, interpretable % so it can be analysed on its own first.
+      Stored in both signals_log and outcomes, seeded once at signal time
+      (same seed-once semantics as days_above_ema / avg_tl_volume_20d).
+      Empty string when there isn't enough history before the signal day.
+      _migrate_log_schema() adds the columns automatically on next scan.
+
 Refresh ticker lists with:
     python update_index.py -i xu100
     python update_index.py -i xu500
@@ -201,6 +272,14 @@ DATASETS = {
     },
 }
 
+try:
+    import kap_lookup
+    _KAP_AVAILABLE = True
+except ImportError:
+    _KAP_AVAILABLE = False
+    print("Note: kap_lookup.py not found — KAP enrichment disabled.")
+
+
 SIGNAL_COLUMNS = [
     "scan_date", "signal_date", "ticker", "trigger",
     "y_close", "y_ema20", "y_ema50",
@@ -232,6 +311,24 @@ SIGNAL_COLUMNS = [
     # signal day. Stored in TL (raw integer); analysis side decides
     # cutoffs (e.g. exclude lowest decile for clean cohort statistics).
     "avg_tl_volume_20d",
+    # KAP disclosure context — populated by kap_lookup.enrich_hits() if available.
+    # Looks at the past 14 calendar days of disclosures for the signal ticker
+    # (all KAP types: ODA, CA, FR, DUY, DG, FON). Two parallel breakdowns:
+    #   1. By KAP's own disclosureType
+    #   2. By title-based mechanical category (YENI_IS, ESAS_SOZ, FR_BILANCO, ...)
+    # The second is pattern matching on titles — no tier/edge judgment.
+    # Tier and hypothesis testing happen on accumulated data, not at scan time.
+    "kap_count_14d",         # int: total disclosures in past 14 days (bedelsiz hariç)
+    "kap_oda_count_14d",     # int: disclosureType == "ODA" only
+    "kap_signal_day",        # int: disclosures on signal day itself
+    "kap_type_breakdown",    # str: "ODA:3 CA:2 FR:1" (KAP's six native types)
+    "kap_category_breakdown",# str: "YENI_IS:2 ESAS_SOZ:1" (title-based labels)
+    # EMA slope = % change of each EMA over the prior EMA_SLOPE_LOOKBACK
+    # trading days, measured at the signal day. Positive = rising EMA.
+    # ema_gap_pct says the stack is bullish; slope says whether it's
+    # accelerating or going flat. Comparable across price levels (a %,
+    # like ema_gap_pct). Empty when history before the signal is too short.
+    "ema20_slope", "ema50_slope",
 ]
 
 OUTCOME_COLUMNS = [
@@ -311,6 +408,11 @@ OUTCOME_COLUMNS = [
     # volume (close * volume) at signal time. Same seed-once semantics
     # as days_above_ema. Use for liquidity filtering in analysis.
     "avg_tl_volume_20d",
+    # Mirror of signals_log ema20_slope / ema50_slope — % change of each
+    # EMA over the prior EMA_SLOPE_LOOKBACK trading days at signal time.
+    # Seeded once, never refilled. Here so outcome-side analyses don't
+    # need to merge against signals_log to access trend slope.
+    "ema20_slope", "ema50_slope",
 ]
 
 # Yahoo Finance symbol for the BIST 100 index. Used as the market benchmark
@@ -322,6 +424,12 @@ XU100_SYMBOL = "XU100.IS"
 # the exchange permitted it.
 LIMIT_PCT = 10.0
 LIMIT_TOLERANCE = 0.05  # so 9.95% counts as 'at limit'
+
+# Lookback (in trading days) for the EMA slope columns. One trading week:
+# responsive enough to register a change in EMA20, while still meaningful
+# for the slower EMA50 structural drift. Matches the 3-15 day swing horizon
+# the scanner serves. Change here propagates to both ema20_slope/ema50_slope.
+EMA_SLOPE_LOOKBACK = 5
 
 
 def load_tickers(tickers_path: Path, updater_hint: str) -> list[str]:
@@ -424,6 +532,29 @@ def days_above_ema(df: pd.DataFrame, signal_idx: int, ema_col: str) -> int:
     return count
 
 
+def ema_slope_pct(df: pd.DataFrame, signal_idx: int, ema_col: str,
+                  lookback: int = EMA_SLOPE_LOOKBACK) -> float | None:
+    """Percent change of the named EMA over the `lookback` trading days
+    ending at signal_idx:  (ema_now / ema_past - 1) * 100.
+
+    Positive -> EMA rising (trend strengthening up); negative -> falling.
+    Expressed as a % so it is comparable across stocks at any price level
+    (same rationale as ema_gap_pct). This is the total move over the
+    window; the per-bar slope is simply the return / lookback.
+
+    Returns None when there isn't enough history before signal_idx, or the
+    past EMA value is non-positive / NaN — the caller writes "" for these.
+    """
+    past_idx = signal_idx - lookback
+    if past_idx < 0:
+        return None
+    now = df.iloc[signal_idx][ema_col]
+    past = df.iloc[past_idx][ema_col]
+    if pd.isna(now) or pd.isna(past) or past <= 0:
+        return None
+    return (now / past - 1) * 100
+
+
 def scan(target_date: str | None, tickers_path: Path, updater_hint: str) -> list[dict]:
     tickers = load_tickers(tickers_path, updater_hint)
     hits = []
@@ -496,6 +627,11 @@ def scan(target_date: str | None, tickers_path: Path, updater_hint: str) -> list
                     "avg_tl_volume_20d": tl_vol_avg,
                     "days_above_ema20": ema20_age,
                     "days_above_ema50": ema50_age,
+                    # Trend slope: % change of each EMA over the prior
+                    # EMA_SLOPE_LOOKBACK days. None when history is short
+                    # (write time converts None -> "").
+                    "ema20_slope": ema_slope_pct(df, signal_idx, "EMA20"),
+                    "ema50_slope": ema_slope_pct(df, signal_idx, "EMA50"),
                 })
         except Exception as e:
             sys.stdout.write(f"\r[{i:>3}/{total}] {ticker:<10}  ERROR: {e}\n")
@@ -547,6 +683,17 @@ def print_results(hits: list[dict], target_date: str | None, label: str = "BIST1
               f"{h['y_close']:>8.2f} {h['y_ema20']:>9.2f} {h['y_ema50']:>9.2f}  "
               f"{h['open']:>7.2f} {h['close']:>8.2f} {h['t_ema20']:>9.2f} {h['t_ema50']:>9.2f} "
               f"{h['break_pct']:>+7.2f}% {vol_str:>7}")
+        # KAP context on indented lines: types (top) and categories (bottom).
+        # Categories line is omitted when empty (e.g. only OTHER classifications).
+        count = h.get("kap_count_14d")
+        type_bd = h.get("kap_type_breakdown") or ""
+        cat_bd = h.get("kap_category_breakdown") or ""
+        if count and type_bd:
+            sd_count = h.get("kap_signal_day") or 0
+            sd_tag = f" [signal-günü: {sd_count}]" if sd_count else ""
+            print(f"   └─ KAP:      {type_bd}{sd_tag}")
+            if cat_bd:
+                print(f"   └─ Kategori: {cat_bd}")
 
 
 def _weekday_name(date_str: str) -> str:
@@ -641,6 +788,16 @@ def append_signals_log(hits: list[dict], signals_path: Path):
                 "days_above_ema20": h["days_above_ema20"],
                 "days_above_ema50": h["days_above_ema50"],
                 "avg_tl_volume_20d": round(h["avg_tl_volume_20d"]),
+                # KAP context (may be missing if kap_lookup not available
+                # or API call failed — fields default to empty string).
+                "kap_count_14d": h.get("kap_count_14d", ""),
+                "kap_oda_count_14d": h.get("kap_oda_count_14d", ""),
+                "kap_signal_day": h.get("kap_signal_day", ""),
+                "kap_type_breakdown": h.get("kap_type_breakdown", "") or "",
+                "kap_category_breakdown": h.get("kap_category_breakdown", "") or "",
+                # EMA slopes — None (insufficient history) becomes "".
+                "ema20_slope": round(h["ema20_slope"], 4) if h.get("ema20_slope") is not None else "",
+                "ema50_slope": round(h["ema50_slope"], 4) if h.get("ema50_slope") is not None else "",
             })
     print(f"Logged {len(new_rows)} signal(s) to {signals_path.name}")
 
@@ -678,11 +835,13 @@ def update_outcomes(new_hits: list[dict], outcomes_path: Path):
             "days_above_ema20": h["days_above_ema20"],
             "days_above_ema50": h["days_above_ema50"],
             "avg_tl_volume_20d": round(h["avg_tl_volume_20d"]),
+            "ema20_slope": round(h["ema20_slope"], 4) if h.get("ema20_slope") is not None else "",
+            "ema50_slope": round(h["ema50_slope"], 4) if h.get("ema50_slope") is not None else "",
             **{col: "" for col in OUTCOME_COLUMNS if col not in
                ("signal_date", "ticker", "trigger",
                 "signal_close", "signal_close_in_range",
                 "days_above_ema20", "days_above_ema50",
-                "avg_tl_volume_20d")},
+                "avg_tl_volume_20d", "ema20_slope", "ema50_slope")},
         })
 
     # Step 3: pre-fetch the XU100 index series once. We'll use it to fill
@@ -1212,6 +1371,16 @@ def main():
     dataset = DATASETS[args.index]
 
     hits = scan(args.date, dataset["tickers"], dataset["updater"])
+
+    # KAP disclosure enrichment (single API call, filters per-ticker in memory).
+    # Fetches all disclosure types (ÖDA, CA, FR, DUY, DG, FON) so the context
+    # surfaces financial reports and announcements alongside ÖDA, not just one type.
+    # Graceful: failure leaves columns empty and scan continues.
+    if hits and _KAP_AVAILABLE:
+        try:
+            kap_lookup.enrich_hits(hits, args.date)
+        except Exception as e:
+            print(f"  KAP enrichment error (skipping): {e}")
 
     # All signals are written to logs. The min-break threshold only changes
     # the visual marker in the terminal output (>= threshold gets a marker)

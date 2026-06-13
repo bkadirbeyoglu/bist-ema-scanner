@@ -176,8 +176,13 @@ Append-only history. Columns:
 | `ema_gap_pct` | EMA20-EMA50 spread as % of EMA50; sign indicates trend stack |
 | `days_above_ema20`, `days_above_ema50` | Trend age — consecutive trading days ending at signal_date (inclusive) where close finished above each EMA |
 | `avg_tl_volume_20d` | 20-day average TL volume (close × volume), shifted by 1; the monetary liquidity of the stock |
+| `kap_count_14d`, `kap_oda_count_14d`, `kap_signal_day` | KAP disclosure counts (v1.12): total in the past 14 calendar days, ODA-type only, and on the signal day itself |
+| `kap_type_breakdown`, `kap_category_breakdown` | KAP disclosure summaries (v1.12): compact counts by KAP's native type (`ODA:3 CA:1 …`) and by title-based category (`YENI_IS:2 …`) |
+| `ema20_slope`, `ema50_slope` | EMA trend slope (v1.13): % change of each EMA over the prior 5 trading days; sign/magnitude show whether the stack is rising and how fast |
 
 Duplicate-protected on `(scan_date, signal_date, ticker)` — running the scanner multiple times the same day is safe.
+
+**KAP disclosure context (v1.12, signals_log only).** The five `kap_*` columns tag each signal with its recent Borsa İstanbul disclosure activity, fetched via an optional `kap_lookup.py` module. All disclosure types are counted (ODA, CA, FR, DUY, DG, FON) — not just material events — since financial reports, corporate actions, and announcements can all bear on a breakout; mechanical bonus-issue (bedelsiz) split notices are excluded so they don't mislead the count. The two breakdown strings give a count by KAP's six native types and a finer count by title-based category. No edge/tier label is applied at scan time — counts are mechanical, and category-to-outcome mapping is a separate analysis step on accumulated data, to avoid baking unvalidated hypotheses into the pipeline. Graceful degradation: if `kap_lookup.py` is missing or the KAP API is unreachable, the five columns are written empty and the scan continues normally.
 
 ### `outcomes_xu*.csv`
 
@@ -197,11 +202,13 @@ Self-updating. New signals are inserted with empty outcome cells. On subsequent 
 
 **Trend age.** `days_above_ema20` and `days_above_ema50` — count of consecutive trading days ending at signal_date (inclusive) where close finished above each EMA. Mirrors the columns of the same name in `signals_log_*.csv`; seeded at signal time and never refilled by outcome updates. The signal day itself always counts as 1 because the trigger requires close > both EMAs. Lets analyses distinguish fresh crosses (=1) from mature trends, and lets the difference `days_above_ema50 − days_above_ema20` flag mature uptrends with shallow recent EMA20 pullbacks.
 
+**Trend slope (v1.13).** `ema20_slope` and `ema50_slope` — percent change of each EMA over the prior 5 trading days (`EMA_SLOPE_LOOKBACK`), measured at the signal day: positive means the EMA is rising. Mirrors the signals_log columns of the same name; seeded once at signal time, never refilled. Where `ema_gap_pct` shows that the EMA stack is bullish (post-cross), the slope shows whether that structure is accelerating or going flat — meant to refine the post-cross edge by separating breakouts into a rising stack from breakouts into a flattening one. Expressed as a % so it is comparable across price levels (same rationale as `ema_gap_pct`). Empty when there isn't enough history before the signal day.
+
 **Liquidity.** `avg_tl_volume_20d` — 20-day rolling mean of (close × volume), shifted by 1. Mirror of the signals_log column of the same name; seeded at signal time, never refilled. Represents the stock's recent monetary liquidity in Turkish lira — what a trader could realistically move per session. TL-denominated rather than share-count because price scales differ wildly across the universe (1M shares of a 1 TL stock and 1M shares of a 1000 TL stock are very different liquidities). Use for filtering out micro-liquid edge cases that would otherwise dilute cohort statistics.
 
 **Status flags.** `at_limit` — "T" if d1 hit the BIST ±10% price limit. `split_suspect` — "T" when d1 OHLC shows a scale inconsistency with `signal_close` (the fingerprint of a stock split between signal time and the outcome update). Split-suspect rows should be excluded from analysis: `df[df['split_suspect'] != 'T']`.
 
-After a few weeks, this file is a goldmine for analysis: open it in Excel or pandas, pivot by `trigger`, by `vol_ratio` bucket, by `break_pct` quintile, by gap size (`d1_open - signal_close`), by `close_in_range` position, by `day_of_week`, by `days_above_ema20` band, by `avg_tl_volume_20d` decile, or by market-relative performance at any horizon from d1 through d5, and see which conditions actually predict positive subsequent returns.
+After a few weeks, this file is a goldmine for analysis: open it in Excel or pandas, pivot by `trigger`, by `vol_ratio` bucket, by `break_pct` quintile, by gap size (`d1_open - signal_close`), by `close_in_range` position, by `day_of_week`, by `days_above_ema20` band, by `ema20_slope` sign/magnitude, by `avg_tl_volume_20d` decile, by KAP activity (`kap_signal_day`, `kap_category_breakdown`, joined from signals_log), or by market-relative performance at any horizon from d1 through d5, and see which conditions actually predict positive subsequent returns.
 
 ## Data quality and robustness
 
@@ -215,7 +222,7 @@ The scanner self-heals from several yfinance data quirks that can otherwise corr
 
 ## Schema migrations
 
-Both log files automatically migrate to the current schema when the scanner runs. If new columns have been added between versions (e.g. `signal_close_in_range` in v1.6, `split_suspect` in v1.7, `days_above_ema20` / `days_above_ema50` in v1.9, `avg_tl_volume_20d` in v1.10, `xu100_d2_close` / `xu100_d3_close` / `xu100_d4_close` / `xu100_d5_close` in v1.11), the scanner prints a "Migrating … adding columns […]" line on the next run and rewrites the file with the new headers; existing rows get empty values for the new columns. Pre-migration data is preserved untouched. For the v1.11 columns specifically, the new market-reference cells get populated progressively as the scanner runs on subsequent trading days — every signal whose d2..d5 dates have already passed at the time of the next run gets filled in a single pass.
+Both log files automatically migrate to the current schema when the scanner runs. If new columns have been added between versions (e.g. `signal_close_in_range` in v1.6, `split_suspect` in v1.7, `days_above_ema20` / `days_above_ema50` in v1.9, `avg_tl_volume_20d` in v1.10, `xu100_d2_close` / `xu100_d3_close` / `xu100_d4_close` / `xu100_d5_close` in v1.11, the `kap_*` columns in v1.12, and `ema20_slope` / `ema50_slope` in v1.13), the scanner prints a "Migrating … adding columns […]" line on the next run and rewrites the file with the new headers; existing rows get empty values for the new columns. Pre-migration data is preserved untouched. For the v1.11 columns specifically, the new market-reference cells get populated progressively as the scanner runs on subsequent trading days — every signal whose d2..d5 dates have already passed at the time of the next run gets filled in a single pass. The v1.12 and v1.13 columns are signal-time information, seeded only on newly detected signals; pre-existing rows keep empty values (a one-off backfill from yfinance history can populate them retroactively if needed).
 
 ## Companion tools
 
