@@ -1,5 +1,5 @@
 """
-BIST EMA Breakout Scanner (v1.13)
+BIST EMA Breakout Scanner (v1.15)
 ---------------------------------
 Scans BIST stocks for an EMA breakout pattern. Fires when today's close
 is above both EMA20 and EMA50, AND at least one of:
@@ -220,6 +220,50 @@ v1.13 changes:
       Empty string when there isn't enough history before the signal day.
       _migrate_log_schema() adds the columns automatically on next scan.
 
+v1.14 changes:
+    - ATR(14) and ATR-normalised entry geometry. Four new signal-time
+      columns, seeded once (same semantics as v1.13):
+        atr14        — Wilder-smoothed Average True Range over 14 days,
+                       absolute price units. The base volatility measure;
+                       also the intended basis for a future ATR-scaled stop.
+        atr_pct      — atr14 / close * 100. The stock's typical daily swing
+                       as a %; doubles as the normaliser for the geometry.
+        break_atr    — extension above the upper EMA in ATRs:
+                       (close - max(EMA20,EMA50)) / atr14. The ATR sibling
+                       of break_pct.
+        ema_gap_atr  — EMA20-EMA50 gap in ATRs: (EMA20-EMA50) / atr14. The
+                       ATR sibling of ema_gap_pct.
+      Why? On entry-knowable geometry, raw break_pct was non-monotonic
+      against forward return (the 3-5% bucket was the weakest, >5% the
+      strongest) — almost certainly because a fixed % extension means very
+      different things on a low-vol vs high-vol name. Expressing the same
+      geometry in ATR units ("how many ATRs above the EMA did it break,
+      how many ATRs wide is the stack") should let these features
+      discriminate entry quality where the raw % could not.
+      Slope-in-ATR is intentionally NOT a separate column: it is derivable
+      as ema20_slope / atr_pct (and likewise ema50_slope), so storing it
+      would just duplicate v1.13 data. break_atr / ema_gap_atr are stored
+      as direct siblings of the existing break_pct / ema_gap_pct, matching
+      that precedent.
+      _migrate_log_schema() adds the columns automatically on next scan;
+      pre-existing rows keep empty values.
+
+v1.15 changes:
+    - Fix duplicate signal rows. append_signals_log() de-duplicated on the
+      (scan_date, signal_date, ticker) triple, which only prevented repeats
+      WITHIN the same calendar day. Re-running the scanner on a LATER day
+      while the latest trading session was unchanged (e.g. a weekend or
+      holiday re-run) re-logged that session under a new scan_date, so the
+      same signal accumulated one row per run. The dedup key is now just
+      (signal_date, ticker): a signal that is already in the log is never
+      re-appended, regardless of scan_date. The scan_date column is kept as
+      informational (when the signal was first detected). Safe to re-run any
+      number of times, same day or later, without creating duplicates.
+      NOTE: existing logs that already contain such duplicates are not
+      touched by this change — clean them once with dedup_signals.py
+      (keeps the most recent scan_date per signal). outcomes_*.csv was
+      unaffected (it already deduped on (signal_date, ticker)).
+
 Refresh ticker lists with:
     python update_index.py -i xu100
     python update_index.py -i xu500
@@ -329,6 +373,14 @@ SIGNAL_COLUMNS = [
     # accelerating or going flat. Comparable across price levels (a %,
     # like ema_gap_pct). Empty when history before the signal is too short.
     "ema20_slope", "ema50_slope",
+    # ATR(14) + ATR-normalised entry geometry (v1.14). atr14 = absolute
+    # Wilder ATR; atr_pct = atr14/close (daily volatility as %); break_atr =
+    # extension above the upper EMA in ATRs; ema_gap_atr = EMA20-EMA50 gap in
+    # ATRs. Volatility-normalised so "how many ATRs" is comparable across the
+    # universe — raw break_pct was non-monotonic because a fixed % means
+    # different things at different volatilities. slope-in-ATR is derivable
+    # (ema_slope / atr_pct), so not stored separately.
+    "atr14", "atr_pct", "break_atr", "ema_gap_atr",
 ]
 
 OUTCOME_COLUMNS = [
@@ -413,6 +465,9 @@ OUTCOME_COLUMNS = [
     # Seeded once, never refilled. Here so outcome-side analyses don't
     # need to merge against signals_log to access trend slope.
     "ema20_slope", "ema50_slope",
+    # Mirror of signals_log ATR-normalised geometry (v1.14): atr14, atr_pct,
+    # break_atr, ema_gap_atr. Seeded once at signal time, never refilled.
+    "atr14", "atr_pct", "break_atr", "ema_gap_atr",
 ]
 
 # Yahoo Finance symbol for the BIST 100 index. Used as the market benchmark
@@ -430,6 +485,11 @@ LIMIT_TOLERANCE = 0.05  # so 9.95% counts as 'at limit'
 # for the slower EMA50 structural drift. Matches the 3-15 day swing horizon
 # the scanner serves. Change here propagates to both ema20_slope/ema50_slope.
 EMA_SLOPE_LOOKBACK = 5
+
+# Period for the Wilder ATR used by the ATR-normalised entry geometry (v1.14).
+# 14 is the canonical ATR window. atr14 also feeds atr_pct, break_atr and
+# ema_gap_atr, and is the intended basis for a future ATR-scaled stop.
+ATR_PERIOD = 14
 
 
 def load_tickers(tickers_path: Path, updater_hint: str) -> list[str]:
@@ -489,6 +549,16 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # Share-volume alone is misleading because price scales differ wildly
     # across the universe (e.g. 1M shares of 1 TL vs 1M shares of 1000 TL).
     df["TL_VOL_AVG20"] = (df["Close"] * df["Volume"]).rolling(window=20).mean().shift(1)
+    # True Range and Wilder-smoothed ATR(14): absolute daily volatility, the
+    # base for ATR-normalised entry geometry (v1.14) and a future ATR stop.
+    # Wilder smoothing == ewm(alpha=1/period, adjust=False).
+    prev_close = df["Close"].shift(1)
+    true_range = pd.concat([
+        (df["High"] - df["Low"]),
+        (df["High"] - prev_close).abs(),
+        (df["Low"] - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    df["ATR14"] = true_range.ewm(alpha=1 / ATR_PERIOD, adjust=False).mean()
     return df
 
 
@@ -555,6 +625,27 @@ def ema_slope_pct(df: pd.DataFrame, signal_idx: int, ema_col: str,
     return (now / past - 1) * 100
 
 
+def atr_geometry(close: float, t_ema20: float, t_ema50: float,
+                 atr14: float | None) -> dict:
+    """ATR-normalised entry geometry at the signal day (v1.14).
+
+    Returns atr14, atr_pct (= atr14/close*100), break_atr (extension above
+    the upper EMA in ATRs) and ema_gap_atr (EMA20-EMA50 gap in ATRs). All
+    normalised values are None when ATR is missing or non-positive
+    (insufficient history); the caller writes "" for None.
+    """
+    if atr14 is None or atr14 <= 0:
+        return {"atr14": atr14, "atr_pct": None,
+                "break_atr": None, "ema_gap_atr": None}
+    upper = max(t_ema20, t_ema50)
+    return {
+        "atr14": atr14,
+        "atr_pct": (atr14 / close * 100) if close > 0 else None,
+        "break_atr": (close - upper) / atr14,
+        "ema_gap_atr": (t_ema20 - t_ema50) / atr14,
+    }
+
+
 def scan(target_date: str | None, tickers_path: Path, updater_hint: str) -> list[dict]:
     tickers = load_tickers(tickers_path, updater_hint)
     hits = []
@@ -605,6 +696,11 @@ def scan(target_date: str | None, tickers_path: Path, updater_hint: str) -> list
                 # EMAs); we walk back until close <= ema.
                 ema20_age = days_above_ema(df, signal_idx, "EMA20")
                 ema50_age = days_above_ema(df, signal_idx, "EMA50")
+                # ATR-normalised entry geometry (v1.14). atr14 None when
+                # history is short -> normalised values None -> "".
+                atr14_raw = float(today["ATR14"]) if pd.notna(today["ATR14"]) else None
+                atrg = atr_geometry(close, float(today["EMA20"]),
+                                    float(today["EMA50"]), atr14_raw)
                 hits.append({
                     "ticker": ticker,
                     "date": today.name.strftime("%Y-%m-%d") if hasattr(today.name, "strftime") else str(today.name),
@@ -632,6 +728,11 @@ def scan(target_date: str | None, tickers_path: Path, updater_hint: str) -> list
                     # (write time converts None -> "").
                     "ema20_slope": ema_slope_pct(df, signal_idx, "EMA20"),
                     "ema50_slope": ema_slope_pct(df, signal_idx, "EMA50"),
+                    # ATR(14) + ATR-normalised geometry (v1.14).
+                    "atr14": atrg["atr14"],
+                    "atr_pct": atrg["atr_pct"],
+                    "break_atr": atrg["break_atr"],
+                    "ema_gap_atr": atrg["ema_gap_atr"],
                 })
         except Exception as e:
             sys.stdout.write(f"\r[{i:>3}/{total}] {ticker:<10}  ERROR: {e}\n")
@@ -738,8 +839,10 @@ def _migrate_log_schema(log_path: Path, expected_columns: list[str]):
 
 def append_signals_log(hits: list[dict], signals_path: Path):
     """Append today's signals to the given signals CSV (never overwrites).
-    Skips rows that match an existing (scan_date, signal_date, ticker)
-    triple — safe to re-run the scanner multiple times on the same day."""
+    Skips any hit whose (signal_date, ticker) is already in the log — safe
+    to re-run the scanner any number of times, on the same day or a later
+    one, without creating duplicate signal rows. (scan_date is kept on each
+    row purely as informational metadata: when the signal was first seen.)"""
     if not hits:
         return
     scan_date = datetime.now().strftime("%Y-%m-%d")
@@ -747,17 +850,17 @@ def append_signals_log(hits: list[dict], signals_path: Path):
     # Migrate to current schema if columns are missing (idempotent)
     _migrate_log_schema(signals_path, SIGNAL_COLUMNS)
 
-    # Load existing keys to avoid duplicates
-    existing_keys: set[tuple[str, str, str]] = set()
+    # Load existing (signal_date, ticker) keys to avoid duplicates
+    existing_keys: set[tuple[str, str]] = set()
     if signals_path.exists():
         with signals_path.open(encoding="utf-8") as f:
             for row in csv.DictReader(f):
-                existing_keys.add((row["scan_date"], row["signal_date"], row["ticker"]))
+                existing_keys.add((row["signal_date"], row["ticker"]))
 
     new_rows = [h for h in hits
-                if (scan_date, h["date"], h["ticker"]) not in existing_keys]
+                if (h["date"], h["ticker"]) not in existing_keys]
     if not new_rows:
-        print(f"Signals already logged today — nothing new to append")
+        print(f"Signals already logged — nothing new to append")
         return
 
     file_exists = signals_path.exists()
@@ -798,6 +901,11 @@ def append_signals_log(hits: list[dict], signals_path: Path):
                 # EMA slopes — None (insufficient history) becomes "".
                 "ema20_slope": round(h["ema20_slope"], 4) if h.get("ema20_slope") is not None else "",
                 "ema50_slope": round(h["ema50_slope"], 4) if h.get("ema50_slope") is not None else "",
+                # ATR(14) + ATR-normalised geometry (v1.14) — None -> "".
+                "atr14": round(h["atr14"], 4) if h.get("atr14") is not None else "",
+                "atr_pct": round(h["atr_pct"], 4) if h.get("atr_pct") is not None else "",
+                "break_atr": round(h["break_atr"], 4) if h.get("break_atr") is not None else "",
+                "ema_gap_atr": round(h["ema_gap_atr"], 4) if h.get("ema_gap_atr") is not None else "",
             })
     print(f"Logged {len(new_rows)} signal(s) to {signals_path.name}")
 
@@ -837,11 +945,16 @@ def update_outcomes(new_hits: list[dict], outcomes_path: Path):
             "avg_tl_volume_20d": round(h["avg_tl_volume_20d"]),
             "ema20_slope": round(h["ema20_slope"], 4) if h.get("ema20_slope") is not None else "",
             "ema50_slope": round(h["ema50_slope"], 4) if h.get("ema50_slope") is not None else "",
+            "atr14": round(h["atr14"], 4) if h.get("atr14") is not None else "",
+            "atr_pct": round(h["atr_pct"], 4) if h.get("atr_pct") is not None else "",
+            "break_atr": round(h["break_atr"], 4) if h.get("break_atr") is not None else "",
+            "ema_gap_atr": round(h["ema_gap_atr"], 4) if h.get("ema_gap_atr") is not None else "",
             **{col: "" for col in OUTCOME_COLUMNS if col not in
                ("signal_date", "ticker", "trigger",
                 "signal_close", "signal_close_in_range",
                 "days_above_ema20", "days_above_ema50",
-                "avg_tl_volume_20d", "ema20_slope", "ema50_slope")},
+                "avg_tl_volume_20d", "ema20_slope", "ema50_slope",
+                "atr14", "atr_pct", "break_atr", "ema_gap_atr")},
         })
 
     # Step 3: pre-fetch the XU100 index series once. We'll use it to fill
