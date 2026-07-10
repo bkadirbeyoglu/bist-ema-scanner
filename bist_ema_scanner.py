@@ -265,11 +265,13 @@ v1.15 changes:
       unaffected (it already deduped on (signal_date, ticker)).
 
 Refresh ticker lists with:
+    python update_index.py -i xu030
     python update_index.py -i xu100
     python update_index.py -i xu500
 
 Usage:
     python bist_ema_scanner.py                          # XU100, latest session
+    python bist_ema_scanner.py -i xu030                 # XU030 (BIST 30)
     python bist_ema_scanner.py -i xu500                 # XU500
     python bist_ema_scanner.py -d 2026-04-17            # specific session
     python bist_ema_scanner.py -i xu500 --no-log        # no logging
@@ -297,9 +299,16 @@ from bist_calendar import (
 HERE = Path(__file__).resolve().parent
 STALE_DAYS = 100  # BIST 100 rebalances quarterly — warn if CSV is older than this
 
-# Two separate datasets: XU100 (default) or XU500. Each has its own ticker
-# list + log/outcome files so analyses stay distinct.
+# Separate datasets: XU030 (BIST 30), XU100 (default) or XU500. Each has its
+# own ticker list + log/outcome files so analyses stay distinct.
 DATASETS = {
+    "xu030": {
+        "tickers": HERE / "xu030.csv",
+        "signals": HERE / "signals_log_xu030.csv",
+        "outcomes": HERE / "outcomes_xu030.csv",
+        "label": "XU030",
+        "updater": "update_index.py -i xu030",
+    },
     "xu100": {
         "tickers": HERE / "xu100.csv",
         "signals": HERE / "signals_log_xu100.csv",

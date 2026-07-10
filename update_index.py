@@ -2,7 +2,7 @@
 update_index.py
 ---------------
 Downloads constituents of a BIST index from KAP and writes them to
-{index}.csv (e.g. xu100.csv or xu500.csv).
+{index}.csv (e.g. xu030.csv, xu100.csv or xu500.csv).
 
 KAP embeds index data inside a <script> tag as a JavaScript string, so the
 JSON arrives with escaped quotes. Each index entry looks like:
@@ -24,9 +24,10 @@ Setup:
 
 Usage:
     python update_index.py                      # XU100 (default) → xu100.csv
+    python update_index.py -i xu030             # XU030 (BIST 30) → xu030.csv
     python update_index.py -i xu500             # XU500           → xu500.csv
-    python update_index.py --index xu500
-    python update_index.py -i xu500 -s midas    # use Midas as fallback
+    python update_index.py --index xu030
+    python update_index.py -i xu030 -s midas    # use Midas as fallback
     python update_index.py -o foo.csv           # custom output
 """
 
@@ -43,6 +44,12 @@ HERE = Path(__file__).resolve().parent
 
 # Per-index configuration. Add new indices here as needed.
 INDICES = {
+    "xu030": {
+        "kap_code": "XU030",
+        "midas_url": "https://www.getmidas.com/canli-borsa/xu030-bist-30-hisseleri",
+        "default_output": HERE / "xu030.csv",
+        "expected_count": 30,
+    },
     "xu100": {
         "kap_code": "XU100",
         "midas_url": "https://www.getmidas.com/canli-borsa/xu100-bist-100-hisseleri",

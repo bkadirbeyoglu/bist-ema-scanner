@@ -12,7 +12,7 @@ Borsa İstanbul (BIST) hisselerini her seans sonu tarayan, EMA-20 / EMA-50 kır�
 
 ## Ne yapar
 
-BIST kapanışından sonra `bist_ema_scanner.py`'yi çalıştırırsın. Seçtiğin endeksteki (varsayılan XU100, alternatif XU500) her hisse için Yahoo Finance'tan son 6 ayın günlük mumlarını çeker, EMA-20 ve EMA-50'yi hesaplar, ve bugünkü kapanışı iki kırılım örüntüsünden birine uyan hisseleri ekrana basar. Bulunan sinyaller bir CSV'ye eklenir; geçmişteki her sinyalin sonraki 1-10 günlük getirisi, gün-içi range bilgisi, hacim sürekliliği, piyasaya göre rölatif performansı, trend yaşı ve likidite profili de yeni günler geçtikçe otomatik olarak doldurulur.
+BIST kapanışından sonra `bist_ema_scanner.py`'yi çalıştırırsın. Seçtiğin endeksteki (XU030 (BIST 30), varsayılan XU100, alternatif XU500) her hisse için Yahoo Finance'tan son 6 ayın günlük mumlarını çeker, EMA-20 ve EMA-50'yi hesaplar, ve bugünkü kapanışı iki kırılım örüntüsünden birine uyan hisseleri ekrana basar. Bulunan sinyaller bir CSV'ye eklenir; geçmişteki her sinyalin sonraki 1-10 günlük getirisi, gün-içi range bilgisi, hacim sürekliliği, piyasaya göre rölatif performansı, trend yaşı ve likidite profili de yeni günler geçtikçe otomatik olarak doldurulur.
 
 ## Sinyal tanımı
 
@@ -120,9 +120,12 @@ Endeksler üç ayda bir yeniden dengelenir. Gerektiğinde tekrar çalıştır:
 
 ```bash
 python update_index.py                    # XU100 → xu100.csv  (varsayılan)
+python update_index.py -i xu030           # XU030 (BIST 30) → xu030.csv
 python update_index.py -i xu500           # XU500 → xu500.csv
 python update_index.py -i xu500 -s midas  # KAP çalışmazsa Midas'tan al
 ```
+
+> **BIST 30 notu.** `-i xu030` yalnızca 30 BIST 30 hissesini tarar (diğer endeksler gibi üç ayda bir dengelenir — Oca/Nis/Tem/Eyl sonrası tazele). Piyasa-rölatif referans her evren için **XU100** kalır; böylece XU030 sinyalleri XU100/XU500 sinyalleriyle kıyaslanabilir olur. XU030'un kendi ayrı log/outcome dosyaları vardır, yani temiz bir forward izlemesi sıfırdan başlar.
 
 ### 2. Tarayıcıyı çalıştır
 
@@ -130,6 +133,7 @@ BIST 18:00'de kapanır; Yahoo'nun günlük barı 15-30 dk içinde oturur. Taray�
 
 ```bash
 python bist_ema_scanner.py                    # XU100 (varsayılan)
+python bist_ema_scanner.py -i xu030           # XU030 (BIST 30)
 python bist_ema_scanner.py -i xu500           # XU500
 python bist_ema_scanner.py -d 2026-04-17      # belirli bir geçmiş seansı tara
 python bist_ema_scanner.py -m 1.0             # ✓ eşiğini %1'e yükselt
@@ -152,13 +156,16 @@ python debug_ticker.py HALKB
 Her endeksin kendi log dosya çifti vardır; sonuçlar asla karışmaz:
 
 ```
-xu100.csv                  ← hisse listesi (update_index.py oluşturur)
+xu030.csv                  ← hisse listesi (update_index.py oluşturur)
+xu100.csv
 xu500.csv
 
-signals_log_xu100.csv      ← şimdiye kadarki tüm sinyaller
+signals_log_xu030.csv      ← şimdiye kadarki tüm sinyaller
+signals_log_xu100.csv
 signals_log_xu500.csv
 
-outcomes_xu100.csv         ← sinyal sonrası d1..d10 getirileri + gün-içi + piyasaya rölatif
+outcomes_xu030.csv         ← sinyal sonrası d1..d10 getirileri + gün-içi + piyasaya rölatif
+outcomes_xu100.csv
 outcomes_xu500.csv
 ```
 
@@ -248,6 +255,7 @@ En son sinyal tarihinin d1 sonuçlarını performansa göre sıralı şekilde, p
 
 ```bash
 python bist_signal_followup.py            # XU100
+python bist_signal_followup.py -i xu030   # XU030 (BIST 30)
 python bist_signal_followup.py -i xu500   # XU500
 ```
 
@@ -274,7 +282,8 @@ bist-ema-scanner/
 ├── bist_signal_followup.py         # Son sinyal hızlı istatistik (tamamlayıcı)
 ├── bist_mean_reversion_scanner.py  # Mean-reversion tarayıcısı (tamamlayıcı)
 │
-├── xu100.csv                       # Hisse listeleri (oluşturulur)
+├── xu030.csv                       # Hisse listeleri (oluşturulur)
+├── xu100.csv
 ├── xu500.csv
 ├── signals_log_xu*.csv             # Sinyal geçmişi (oluşturulur)
 ├── outcomes_xu*.csv                # Sonuç takibi (oluşturulur)

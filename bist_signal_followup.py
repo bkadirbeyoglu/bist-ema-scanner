@@ -20,6 +20,7 @@ Reads from: outcomes_xu*.csv and signals_log_xu*.csv next to this file.
 
 Usage:
     python bist_signal_followup.py                  # XU100 (default)
+    python bist_signal_followup.py -i xu030         # XU030 (BIST 30)
     python bist_signal_followup.py -i xu500         # XU500
     python bist_signal_followup.py -d 2026-05-13    # for a specific signal date
 """
@@ -34,6 +35,11 @@ from pathlib import Path
 HERE = Path(__file__).parent
 
 INDEX_FILES = {
+    "xu030": {
+        "signals": HERE / "signals_log_xu030.csv",
+        "outcomes": HERE / "outcomes_xu030.csv",
+        "label": "XU030",
+    },
     "xu100": {
         "signals": HERE / "signals_log_xu100.csv",
         "outcomes": HERE / "outcomes_xu100.csv",
@@ -149,7 +155,7 @@ def print_section(title: str, rows: list[dict]):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("-i", "--index", choices=["xu100", "xu500"], default="xu100",
+    p.add_argument("-i", "--index", choices=["xu030", "xu100", "xu500"], default="xu100",
                    help="Which index to check (default: xu100)")
     p.add_argument("-d", "--date",
                    help="Specific signal_date to check (default: latest date with d1 filled)")
